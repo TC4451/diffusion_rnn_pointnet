@@ -9,6 +9,16 @@ import math
 import matplotlib as plt
 import logging
 import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
+global recorded
+recorded = False
+global sel_y_0
+sel_y_0 = []
+global num_pic
+num_pic = 2
+global num_img
+num_img = 10
 
 # load MNIST dataset, convert to binary pixel values
 mnist_train = datasets.MNIST(root='/mnt/VOL1/fangzhou/local/data/zilin_data/data', train=True, download=True,
@@ -16,13 +26,13 @@ mnist_train = datasets.MNIST(root='/mnt/VOL1/fangzhou/local/data/zilin_data/data
                                  transforms.ToTensor(),
                                  transforms.Lambda(lambda x: torch.where(x > 0,1,0))
                              ]))
-trainloader = torch.utils.data.DataLoader(mnist_train, batch_size=32, shuffle=False)
+trainloader = torch.utils.data.DataLoader(mnist_train, batch_size=64, shuffle=False)
 mnist_test = datasets.MNIST(root='/mnt/VOL1/fangzhou/local/data/zilin_data/data', train=False, download=True,
                              transform=transforms.Compose([
                                  transforms.ToTensor(),
                                  transforms.Lambda(lambda x: torch.where(x > 0,1,0))
                              ]))
-testloader = torch.utils.data.DataLoader(mnist_test, batch_size=32, shuffle=False)
+testloader = torch.utils.data.DataLoader(mnist_test, batch_size=64, shuffle=False)
 # set device to run
 torch.cuda.set_device(0)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -181,7 +191,13 @@ class DRNetTest(nn.Module):
             out = self.h2h(input)
             # calculate the location of embedding of next timestep
             latent_y_T = latent_y_T + x_point + out + sigma_t*epsilon
-
+            global recorded
+            global sel_y_0
+            global num_pic
+            if recorded == False:
+                # print(f"----latentn y size: {latent_y_T.size()}----")
+                sel_y_0.append(latent_y_T[num_pic, :])
+        recorded = True
         return latent_y_T
 
 # Test function for f
@@ -203,6 +219,9 @@ def test_f(point_net, trained_f_net, trained_decoder, params):
             pc = torch.stack(batch_pc, dim=0)
             pc = pc.to(torch.float32).to(device)
             x, feature_transform, tnet_out = point_net(pc)
+            global num_pic
+            if recorded == False:
+                sel_g_enc = x[num_pic]
             f_out = trained_f_net(T, x)
 
             # Use pre-trained decoder classification
@@ -214,10 +233,11 @@ def test_f(point_net, trained_f_net, trained_decoder, params):
             print('test accuracy: {}'.format(accuracy))
 
             
-            if i%2==0:
-                encoding.append(f_out)
-                original_pixel.append(x.view(images.size(0), -1))
-                labels_list.append(labels.to(device))
+            # if i%2==0:
+            encoding.append(f_out.cpu().detach().numpy())
+            # print(f"----x size: {x.size()} ----")
+            original_pixel.append(torch.sum(x, dim=2).view(x.size(0), -1).cpu().detach().numpy())
+            labels_list.append(labels.to(device).cpu().detach().numpy())
             # predictions.append(y_pred)
     
     print("avg accuracy: {}".format(sum(accuracy_list) / len(accuracy_list)))
@@ -227,52 +247,119 @@ def test_f(point_net, trained_f_net, trained_decoder, params):
     gc.collect()
     torch.cuda.empty_cache()
 
+    g_out = np.concatenate(original_pixel, axis=0)
+    f_out = np.concatenate(encoding, axis=0)
+    labels = np.concatenate(labels_list, axis=0)
+
+    np.savetxt('graph_g_out.txt', g_out)
+    np.savetxt('graph_f_out.txt', f_out)
+    np.savetxt('graph_labels.txt', labels)
+
+
     cat_encoding = torch.cat(encoding, dim=0)
     all_labels = torch.cat(labels_list, dim=0)
     torch.cuda.empty_cache()
     original_pixel = torch.cat(original_pixel, dim=0)
-    # predictions = torch.cat(predictions, dim=0)
-
-    import matplotlib.pyplot as plt
-    from sklearn.manifold import TSNE
 
     # Convert tensor to NumPy array
     data_array = cat_encoding.cpu().detach().numpy()
-    labels_array = all_labels.cpu().detach().numpy()
     original_pixel = original_pixel.cpu().detach().numpy()
-    # predictions = predictions.cpu().detach().numpy()
+    labels_array = all_labels.cpu().detach().numpy()
 
+    print(data_array.shape)
+    print(labels_array.shape)
+    print(original_pixel.shape)
+    comb_data = np.concatenate((data_array, original_pixel), axis=0)
+    comb_label = np.concatenate((labels_array, labels_array),axis=0)
+    
     # Perform t-SNE embedding
     tsne = TSNE(n_components=2)
-    tsne_data = tsne.fit_transform(data_array)
-    tsne2 = TSNE(n_components=2)
-    tsne_pixel = tsne2.fit_transform(original_pixel)
-    # tsne3 = TSNE(n_components=2)
-    # tsne_pred = tsne3.fit_transform(predictions)
+    # tsne_data = tsne.fit_transform(data_array)
+    # # # tsne2 = TSNE(n_components=2)
+    # tsne_pixel = tsne.fit_transform(original_pixel)
+    tsne_comb = tsne.fit_transform(comb_data)
+    
     distinct_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
                        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
 
-    # Plot t-SNE embedding
+    # import matplotlib.pyplot as plt
+
+    # Assuming tsne_comb, labels_array, num_classes, and distinct_colors are defined as per your context
+
+    # Calculate the extents of the t-SNE components for the entire dataset
+    x_min, x_max = tsne_comb[:, 0].min()-10, tsne_comb[:, 0].max()+10
+    y_min, y_max = tsne_comb[:, 1].min()-10, tsne_comb[:, 1].max()+10
+
+    # Plot for the first subset
     plt.figure(figsize=(8, 6))
+    plt.title('t-SNE Projection')
+    subset_comb = tsne_comb[:5008]
     for label in range(num_classes):
         idx = labels_array == label
-        plt.scatter(tsne_data[idx, 0], tsne_data[idx, 1], s=10, color=distinct_colors[label], label=str(label))
-    plt.title('t-SNE Projection of f-net Output')
-    # plt.xlabel('Component 1')
-    # plt.ylabel('Component 2')
+        plt.scatter(subset_comb[idx, 0], subset_comb[idx, 1], s=10, color=distinct_colors[label], label=str(label))
+    plt.xlim(x_min, x_max)
+    plt.ylim(y_min, y_max)
     plt.grid(True)
-    plt.savefig('Mar15_tsne_y0_noise_scale_e300_neg1.png')
+    plt.savefig('Mar19_tsne_comb_concat_p1.png')
     plt.close()
 
+    # Plot for the second subset
     plt.figure(figsize=(8, 6))
+    subset_comb = tsne_comb[5008:]
     for label in range(num_classes):
         idx = labels_array == label
-        plt.scatter(tsne_pixel[idx, 0], tsne_pixel[idx, 1], s=10, color=distinct_colors[label], label=str(label))
-    plt.title('t-SNE Projection of g-net Output')
-    # plt.xlabel('Component 1')
-    # plt.ylabel('Component 2')
+        plt.scatter(subset_comb[idx, 0], subset_comb[idx, 1], s=10, color=distinct_colors[label], label=str(label))
+    plt.title('t-SNE Projection')
+    plt.xlim(x_min, x_max)
+    plt.ylim(y_min, y_max)
     plt.grid(True)
-    plt.savefig('Mar15_tsne_g_pixel_noise_scale_e300_neg1.png')
+    plt.savefig('Mar19_tsne_comb_concat_p2.png')
+    plt.close()
+
+
+    # global sel_y_0
+    # print(f"length: {len(sel_y_0)}")
+    # sel_y_0 = torch.stack(sel_y_0, dim=0)
+    # print(sel_y_0.size())
+    # print("----****----")
+    # print(sel_g_enc.size())
+    # print("----****----")
+    # sel_g_enc = sel_g_enc.transpose(1, 0)
+    # sel_g_enc = torch.flip(sel_g_enc, dims=[0])
+    # sel_data = torch.cat((sel_y_0, sel_g_enc), dim=0)
+    # # sel_data = torch.flip(sel_data, dims=[0])
+    # np.savetxt('g_enc.txt', sel_g_enc.cpu().detach().numpy())
+    # np.savetxt('data.txt', sel_data.cpu().detach().numpy())
+
+    # # Compute the difference between corresponding vectors
+    # differences = sel_g_enc - sel_y_0
+
+    # # Compute the L2 norm of these differences for each vector
+    # differences_norms = torch.norm(differences, p=2, dim=1)
+
+    # # Find the maximum norm
+    # max_difference_norm = torch.max(differences_norms).item()
+
+    # print(f"max_difference_norm: {max_difference_norm}")
+
+    # # Calculate pairwise distances
+    # distances = torch.cdist(sel_g_enc, sel_data, p=2)
+    # distances = torch.abs(distances)  # Making sure distances are positive for demonstration
+
+    # # Find the maximum distance
+    # max_distance = torch.max(distances).item()
+    # print(f"max distance: {max_distance}")
+    # sel_d = sel_data.cpu().detach().numpy()
+    # tsne3 = TSNE(n_components=2)
+    # tsne_cmp = tsne3.fit_transform(sel_d)
+
+    # plt.figure(figsize=(8, 6))
+    # plt.title('t-SNE Projection Comparison')
+    # plt.scatter(tsne_cmp[:784, 0], tsne_cmp[:784, 1], c='red', label="Encoded Path")
+    # plt.scatter(tsne_cmp[784:, 0], tsne_cmp[784:, 1], c='blue', label="Predicted Path")
+    # plt.grid(True)
+    # global num_img
+    # plt.savefig(f"Mar19_tsne_comparison_paper_draft_{num_img}.png")
 
 
     # plt.figure(figsize=(8, 6))
@@ -316,7 +403,7 @@ if __name__ == "__main__":
     g_net = g_net.to(device)
     g_net.eval()
     PATH_f = f"Mar14_f_rnn_v18_noise_scale_neg1_lr0.001_e10.pth"
-    
+
     # load model for testing
     trained_f_net = DRNetTest().to(device)
     trained_f_net.load_state_dict(torch.load(PATH_f, map_location=torch.device('cpu')), strict=False)

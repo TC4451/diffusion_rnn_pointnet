@@ -1,4 +1,4 @@
-# CUDA_LAUNCH_BLOCKING=1
+ # CUDA_LAUNCH_BLOCKING=1
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 import torch
@@ -22,7 +22,7 @@ mnist_test = datasets.MNIST(root='/mnt/VOL1/fangzhou/local/data/zilin_data/data'
                                  transforms.ToTensor(),
                                  transforms.Lambda(lambda x: torch.where(x > 0,1,0))
                              ]))
-testloader = torch.utils.data.DataLoader(mnist_test, batch_size=32, shuffle=False)
+testloader = torch.utils.data.DataLoader(mnist_test, batch_size=64, shuffle=False)
 # set device to run
 torch.cuda.set_device(0)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -137,7 +137,7 @@ class ClassificationPointNet(nn.Module):
 # tranform image to 3D (x, y, binary value)
 def img_to_3d(img):
     # get coordinates of pixels
-    coords_x, coords_y = torch.meshgrid(torch.arange(0, img.size(1)), torch.arange(0, img.size(2)))
+    coords_x, coords_y = torch.meshgrid(torch.arange(0, img.size(1))/28, torch.arange(0, img.size(2))/28)
     coords_x = coords_x.flatten().float().unsqueeze(1)
     coords_y = coords_y.flatten().float().unsqueeze(1)
     values = img.view(-1).unsqueeze(1)
@@ -261,7 +261,7 @@ def test_f(point_net, trained_f_net, trained_decoder, params):
     # plt.xlabel('Component 1')
     # plt.ylabel('Component 2')
     plt.grid(True)
-    plt.savefig('Mar15_tsne_y0_noise_scale_e300_neg1.png')
+    plt.savefig('Mar22_tsne_y0.png')
     plt.close()
 
     plt.figure(figsize=(8, 6))
@@ -272,7 +272,7 @@ def test_f(point_net, trained_f_net, trained_decoder, params):
     # plt.xlabel('Component 1')
     # plt.ylabel('Component 2')
     plt.grid(True)
-    plt.savefig('Mar15_tsne_g_pixel_noise_scale_e300_neg1.png')
+    plt.savefig('Mar22_tsne_g_pixel.png')
 
 
     # plt.figure(figsize=(8, 6))
@@ -307,7 +307,7 @@ if __name__ == "__main__":
     #                     level = logging.DEBUG,
     #                     format = '%(asctime)s:%(levelname)s:%(name)s:%(message)s')
     # load the convolution part of pre-trained encoder
-    path_g_net = "Mar7_point_net_v2_Summation.pth"
+    path_g_net = "Mar20_point_net_norm_spatial_encoding.pth"
     g_trained_state_dict = torch.load(path_g_net)
     state_dict = {k: v for k, v in g_trained_state_dict.items() if 'base_pointnet' in k}  # Filter to get only 'i2h' parameters
     state_dict = {key.replace('base_pointnet.', ''): value for key, value in state_dict.items()}
@@ -315,7 +315,7 @@ if __name__ == "__main__":
     g_net.load_state_dict(state_dict)
     g_net = g_net.to(device)
     g_net.eval()
-    PATH_f = f"Mar14_f_rnn_v18_noise_scale_neg1_lr0.001_e10.pth"
+    PATH_f = f"Mar20_f_rnn_v18_norm_spatial.pth"
     
     # load model for testing
     trained_f_net = DRNetTest().to(device)
@@ -323,7 +323,7 @@ if __name__ == "__main__":
     trained_f_net.eval()
 
     # load decoder for testing
-    PATH_d = 'Mar15_decoder_noise_scale_neg1_lr0.001_e300.pth'
+    PATH_d = 'Mar21_decoder.pth'
     trained_decoder = ClassificationPointNet(num_classes=10, point_dimension=3).to(device)
     trained_decoder.load_state_dict(torch.load(PATH_d, map_location=torch.device('cpu')), strict=False)
     trained_decoder.eval()

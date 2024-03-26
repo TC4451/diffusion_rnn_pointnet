@@ -1,32 +1,39 @@
-# CUDA_LAUNCH_BLOCKING=1
+# https://datascienceub.medium.com/pointnet-implementation-explained-visually-c7e300139698
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 import torch
 import torch.nn as nn
-from torchvision import datasets, transforms
 import torch.nn.functional as F
-import math
-import matplotlib as plt
-import logging
+from torchvision import datasets, transforms
 import numpy as np
+import math
+import logging
+
 
 # load MNIST dataset, convert to binary pixel values
-mnist_train = datasets.MNIST(root='/mnt/VOL1/fangzhou/local/data/zilin_data/data', train=True, download=True,
+mnist_train = datasets.MNIST(root='./data', train=True, download=True,
                              transform=transforms.Compose([
                                  transforms.ToTensor(),
                                  transforms.Lambda(lambda x: torch.where(x > 0,1,0))
                              ]))
-trainloader = torch.utils.data.DataLoader(mnist_train, batch_size=32, shuffle=False)
-mnist_test = datasets.MNIST(root='/mnt/VOL1/fangzhou/local/data/zilin_data/data', train=False, download=True,
+trainloader = torch.utils.data.DataLoader(mnist_train, batch_size=64, shuffle=False)
+mnist_test = datasets.MNIST(root='./data', train=False, download=True,
                              transform=transforms.Compose([
                                  transforms.ToTensor(),
                                  transforms.Lambda(lambda x: torch.where(x > 0,1,0))
                              ]))
-testloader = torch.utils.data.DataLoader(mnist_test, batch_size=32, shuffle=False)
-# set device to run
-torch.cuda.set_device(0)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+testloader = torch.utils.data.DataLoader(mnist_test, batch_size=64, shuffle=False)
+device = torch.device("cuda")
 
+# tranform image to 3D (x, y, binary value)
+def img_to_3d(img):
+    # get coordinates of pixels
+    coords_x, coords_y = torch.meshgrid(torch.arange(0, img.size(1)), torch.arange(0, img.size(2)))
+    coords_x = coords_x.flatten().float().unsqueeze(1)
+    coords_y = coords_y.flatten().float().unsqueeze(1)
+    values = img.view(-1).unsqueeze(1)
+    pc = torch.cat((coords_x, coords_y, values), dim=1)
+    return pc
 
 # encoder model  
 class TransformationNet(nn.Module):
@@ -110,29 +117,6 @@ class BasePointNet(nn.Module):
         x = F.relu(self.bn_5(self.conv_5(x)))
 
         return x, feature_transform, tnet_out
-
-class ClassificationPointNet(nn.Module):
-
-    def __init__(self, num_classes, dropout=0.3, point_dimension=3):
-        super(ClassificationPointNet, self).__init__()
-
-        self.fc_1 = nn.Linear(256, 128)
-        self.fc_2 = nn.Linear(128, 64)
-        self.fc_3 = nn.Linear(64, num_classes)
-
-        self.bn_1 = nn.BatchNorm1d(128)
-        self.bn_2 = nn.BatchNorm1d(64)
-
-        self.dropout_1 = nn.Dropout(dropout)
-
-    def forward(self, x):
-        x = x.view(-1, 256)
-
-        x = F.relu(self.bn_1(self.fc_1(x)))
-        x = F.relu(self.bn_2(self.fc_2(x)))
-        x = self.dropout_1(x)
-
-        return F.log_softmax(self.fc_3(x), dim=1)
     
 # tranform image to 3D (x, y, binary value)
 def img_to_3d(img):
@@ -184,18 +168,64 @@ class DRNetTest(nn.Module):
 
         return latent_y_T
 
-# Test function for f
-def test_f(point_net, trained_f_net, trained_decoder, params):
+# model
+class ClassificationPointNet(nn.Module):
+
+    def __init__(self, num_classes, dropout=0.3, point_dimension=3):
+        super(ClassificationPointNet, self).__init__()
+
+        self.fc_1 = nn.Linear(256, 128)
+        self.fc_2 = nn.Linear(128, 64)
+        self.fc_3 = nn.Linear(64, num_classes)
+
+        self.bn_1 = nn.BatchNorm1d(128)
+        self.bn_2 = nn.BatchNorm1d(64)
+
+        self.dropout_1 = nn.Dropout(dropout)
+
+    def forward(self, x):
+        x = x.view(-1, 256)
+
+        x = F.relu(self.bn_1(self.fc_1(x)))
+        x = F.relu(self.bn_2(self.fc_2(x)))
+        x = self.dropout_1(x)
+
+        return F.log_softmax(self.fc_3(x), dim=1)
+
+# -----------
+
+# run f net and get the result before training the decoder
+def train_d(trained_f_net, point_net, params):
     encoding = []
-    predictions = []
-    original_pixel = []
-    accuracy_list = []
-    labels_list = []
+    label_list = []
+    feature_transform_list = []
     num_classes = params['num_classes']
     T = params['T']
+    lr = params['lr_d']
+    epochs = params['num_epochs_d']
 
     # Sampling
     with torch.no_grad():
+        # run f through train dataset
+        for i, (images, labels) in enumerate(trainloader):
+            batch_pc = []
+            for img in images:
+                batch_pc.append(img_to_3d(img))
+            pc = torch.stack(batch_pc, dim=0)
+            pc = pc.to(torch.float32).to(device)
+            x, feature_transform, tnet_out = point_net(pc)
+
+            f_out = trained_f_net(T, x)
+            
+            # record the labels and y_0 predicted
+            nlabels = labels.clone().detach()
+            label_list.append(nlabels)
+            ny_0 = f_out.clone().detach()
+            encoding.append(ny_0)
+            ft = feature_transform.clone().detach()
+            feature_transform_list.append(ft)
+
+        # run f through test dataset
         for i, (images, labels) in enumerate(testloader):
             batch_pc = []
             for img in images:
@@ -203,128 +233,113 @@ def test_f(point_net, trained_f_net, trained_decoder, params):
             pc = torch.stack(batch_pc, dim=0)
             pc = pc.to(torch.float32).to(device)
             x, feature_transform, tnet_out = point_net(pc)
+            feature_transform_list.append(feature_transform)
+
             f_out = trained_f_net(T, x)
-
-            # Use pre-trained decoder classification
-            y_pred = trained_decoder(f_out)
-            _, predicted = torch.max(y_pred.data, 1)
-            labels = labels.to(device)
-            accuracy = (predicted == labels).sum().item() / predicted.size(0)
-            accuracy_list.append(accuracy)
-            print('test accuracy: {}'.format(accuracy))
-
             
-            if i%2==0:
-                encoding.append(f_out)
-                original_pixel.append(x.view(images.size(0), -1))
-                labels_list.append(labels.to(device))
-            # predictions.append(y_pred)
+            # record the labels and y_0 predicted
+            nlabels = labels.clone().detach()
+            label_list.append(nlabels)
+            ny_0 = f_out.clone().detach()
+            encoding.append(ny_0)
+            ft = feature_transform.clone().detach()
+            feature_transform_list.append(ft)
     
-    print("avg accuracy: {}".format(sum(accuracy_list) / len(accuracy_list)))
+    decoder = train_decoder(encoding, label_list, feature_transform_list, lr, epochs)
 
-    import gc
-    # import torch
-    gc.collect()
-    torch.cuda.empty_cache()
+    return decoder
 
-    cat_encoding = torch.cat(encoding, dim=0)
-    all_labels = torch.cat(labels_list, dim=0)
-    torch.cuda.empty_cache()
-    original_pixel = torch.cat(original_pixel, dim=0)
-    # predictions = torch.cat(predictions, dim=0)
+# training the decoder with the output from f net
+def train_decoder(y_0_list, label_list, feature_transform_list, lr, epochs):
+    # Initialize model
+    model = ClassificationPointNet(num_classes=10,
+                                   point_dimension=3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    
+    for e in range(epochs):
+        epoch_train_loss = []
+        epoch_train_acc = []
+        for i, (y_0, labels, ft) in enumerate(zip(y_0_list, label_list, feature_transform_list)):
+            optimizer.zero_grad()
+            labels = labels.to(device)
+            # Train decoder
+            model = model.train()
+            # Make prediction
+            preds = model(y_0)
 
-    import matplotlib.pyplot as plt
-    from sklearn.manifold import TSNE
+            identity = torch.eye(ft.shape[-1])
+            identity = identity.to(device)
+            regularization_loss = torch.norm(
+                identity - torch.bmm(ft, ft.transpose(2, 1)))
+            # Loss
+            loss = F.nll_loss(preds, labels) + 0.001 * regularization_loss
+            # Back propagations
+            epoch_train_loss.append(loss.cpu().item())
+            loss.backward()
+            optimizer.step()
+            preds = preds.data.max(1)[1]
+            corrects = preds.eq(labels.data).cpu().sum()
 
-    # Convert tensor to NumPy array
-    data_array = cat_encoding.cpu().detach().numpy()
-    labels_array = all_labels.cpu().detach().numpy()
-    original_pixel = original_pixel.cpu().detach().numpy()
-    # predictions = predictions.cpu().detach().numpy()
+            accuracy = corrects.item() / float(y_0.size(0))
+            epoch_train_acc.append(accuracy)
+        
+        print('Epoch %s: train loss: %s, train accuracy: %s'
+              % (e,
+                round(np.mean(epoch_train_loss), 4),
+                round(np.mean(epoch_train_acc), 4)))
 
-    # Perform t-SNE embedding
-    tsne = TSNE(n_components=2)
-    tsne_data = tsne.fit_transform(data_array)
-    tsne2 = TSNE(n_components=2)
-    tsne_pixel = tsne2.fit_transform(original_pixel)
-    # tsne3 = TSNE(n_components=2)
-    # tsne_pred = tsne3.fit_transform(predictions)
-    distinct_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-                       '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+        logging.info('Epoch %s: train loss: %s, train accuracy: %s'
+              % (e,
+                round(np.mean(epoch_train_loss), 4),
+                round(np.mean(epoch_train_acc), 4)))
+    return model
 
-    # Plot t-SNE embedding
-    plt.figure(figsize=(8, 6))
-    for label in range(num_classes):
-        idx = labels_array == label
-        plt.scatter(tsne_data[idx, 0], tsne_data[idx, 1], s=10, color=distinct_colors[label], label=str(label))
-    plt.title('t-SNE Projection of f-net Output')
-    # plt.xlabel('Component 1')
-    # plt.ylabel('Component 2')
-    plt.grid(True)
-    plt.savefig('Mar15_tsne_y0_noise_scale_e300_neg1.png')
-    plt.close()
-
-    plt.figure(figsize=(8, 6))
-    for label in range(num_classes):
-        idx = labels_array == label
-        plt.scatter(tsne_pixel[idx, 0], tsne_pixel[idx, 1], s=10, color=distinct_colors[label], label=str(label))
-    plt.title('t-SNE Projection of g-net Output')
-    # plt.xlabel('Component 1')
-    # plt.ylabel('Component 2')
-    plt.grid(True)
-    plt.savefig('Mar15_tsne_g_pixel_noise_scale_e300_neg1.png')
-
-
-    # plt.figure(figsize=(8, 6))
-    # for label in range(num_classes):
-    #     idx = labels_array == label
-    #     plt.scatter(tsne_pred[idx, 0], tsne_pred[idx, 1], s=10, color=distinct_colors[label], label=str(label))
-    # plt.title('t-SNE Plot')
-    # plt.xlabel('Component 1')
-    # plt.ylabel('Component 2')
-    # plt.grid(True)
-    # plt.savefig('Feb23_tsne_ypred.png')
 
 if __name__ == "__main__":
-    # import os
-    # os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-    # export TORCH_CUDNN_V8_API_DISABLED=1
     params = {
         # hyperparam
-        "batch_size": 32,
+        "batch_size": 64,
         "num_classes": 10,
         "pixel_count": 28 * 28,
         "channel_count": 1,
         "T": 28 * 28,
         "lr_f": 0.001,
-        "num_epochs": 10, 
+        "num_epochs_f": 10, 
+        "num_epochs_d": 200, 
         "noise_scale": 1e-3,
+        "lr_d": 0.001,
         "point_dimension": 3
     }
 
-    # # configurate logging function
-    # logging.basicConfig(filename = f"Mar8_f_rnn_v18_AvgPool_lr{params['lr_f']}_e{params['num_epochs']}_loss.log",
-    #                     level = logging.DEBUG,
-    #                     format = '%(asctime)s:%(levelname)s:%(name)s:%(message)s')
+    fn_d = f"Mar15_decoder_noise_scale_neg1_lr{params['lr_d']}_e{params['num_epochs_d']}"
+    # configurate logging function
+    logging.basicConfig(filename = fn_d + ".log",
+                        level = logging.DEBUG,
+                        format = '%(asctime)s:%(levelname)s:%(name)s:%(message)s')
     # load the convolution part of pre-trained encoder
-    path_g_net = "Mar7_point_net_v2_Summation.pth"
-    g_trained_state_dict = torch.load(path_g_net)
+    path_point_net = "Mar7_point_net_v2_Summation.pth"
+    g_trained_state_dict = torch.load(path_point_net)
     state_dict = {k: v for k, v in g_trained_state_dict.items() if 'base_pointnet' in k}  # Filter to get only 'i2h' parameters
     state_dict = {key.replace('base_pointnet.', ''): value for key, value in state_dict.items()}
-    g_net = BasePointNet(point_dimension=params['point_dimension'])
-    g_net.load_state_dict(state_dict)
-    g_net = g_net.to(device)
-    g_net.eval()
+    point_net = BasePointNet(point_dimension=params['point_dimension'])
+    point_net.load_state_dict(state_dict)
+    point_net = point_net.to(device)
+    point_net.eval()
     PATH_f = f"Mar14_f_rnn_v18_noise_scale_neg1_lr0.001_e10.pth"
-    
-    # load model for testing
+    PATH_d = fn_d + ".pth"
+
+    # load f net
     trained_f_net = DRNetTest().to(device)
     trained_f_net.load_state_dict(torch.load(PATH_f, map_location=torch.device('cpu')), strict=False)
     trained_f_net.eval()
-
-    # load decoder for testing
-    PATH_d = 'Mar15_decoder_noise_scale_neg1_lr0.001_e300.pth'
-    trained_decoder = ClassificationPointNet(num_classes=10, point_dimension=3).to(device)
-    trained_decoder.load_state_dict(torch.load(PATH_d, map_location=torch.device('cpu')), strict=False)
-    trained_decoder.eval()
-    test_f(g_net, trained_f_net, trained_decoder, params)
+    # save model
+    decoder = train_d(trained_f_net, point_net, params)
+    torch.save(decoder.state_dict(), PATH_d)
+    
+    # # test model
+    # trained_decoder = Decoder().to(device)
+    # trained_decoder.load_state_dict(torch.load(PATH_d, map_location=torch.device('cpu')), strict=False)
+    # trained_decoder.eval()
+    # test_f(trained_f_net, trained_decoder, params)

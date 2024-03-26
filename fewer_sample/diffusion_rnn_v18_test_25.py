@@ -1,30 +1,35 @@
-# CUDA_LAUNCH_BLOCKING=1
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 import torch
 import torch.nn as nn
 from torchvision import datasets, transforms
+from torch.utils.data import DataLoader, Subset
 import torch.nn.functional as F
 import math
 import matplotlib as plt
 import logging
 import numpy as np
 
-# load MNIST dataset, convert to binary pixel values
-mnist_train = datasets.MNIST(root='/mnt/VOL1/fangzhou/local/data/zilin_data/data', train=True, download=True,
-                             transform=transforms.Compose([
-                                 transforms.ToTensor(),
-                                 transforms.Lambda(lambda x: torch.where(x > 0,1,0))
-                             ]))
-trainloader = torch.utils.data.DataLoader(mnist_train, batch_size=32, shuffle=False)
-mnist_test = datasets.MNIST(root='/mnt/VOL1/fangzhou/local/data/zilin_data/data', train=False, download=True,
-                             transform=transforms.Compose([
-                                 transforms.ToTensor(),
-                                 transforms.Lambda(lambda x: torch.where(x > 0,1,0))
-                             ]))
-testloader = torch.utils.data.DataLoader(mnist_test, batch_size=32, shuffle=False)
-# set device to run
-torch.cuda.set_device(0)
+# Define the transformations
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Lambda(lambda x: torch.where(x > 0, 1, 0))
+])
+
+# Load the full MNIST datasets
+mnist_train_full = datasets.MNIST(root='./data', train=True, download=True, transform=transform)
+mnist_test_full = datasets.MNIST(root='./data', train=False, download=True, transform=transform)
+
+# Calculate half the size of each dataset
+half_train_size = len(mnist_train_full) // 4
+
+# Create subsets for the first half of each dataset
+indices_train = torch.arange(half_train_size)
+mnist_train_half = Subset(mnist_train_full, indices_train)
+
+# Create data loaders for the subsets
+trainloader = DataLoader(mnist_train_half, batch_size=64, shuffle=False)
+testloader = DataLoader(mnist_test_full, batch_size=64, shuffle=False)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -214,7 +219,7 @@ def test_f(point_net, trained_f_net, trained_decoder, params):
             print('test accuracy: {}'.format(accuracy))
 
             
-            if i%2==0:
+            if i%3==0:
                 encoding.append(f_out)
                 original_pixel.append(x.view(images.size(0), -1))
                 labels_list.append(labels.to(device))
@@ -257,23 +262,22 @@ def test_f(point_net, trained_f_net, trained_decoder, params):
     for label in range(num_classes):
         idx = labels_array == label
         plt.scatter(tsne_data[idx, 0], tsne_data[idx, 1], s=10, color=distinct_colors[label], label=str(label))
-    plt.title('t-SNE Projection of f-net Output')
-    # plt.xlabel('Component 1')
-    # plt.ylabel('Component 2')
+    plt.title('t-SNE Plot')
+    plt.xlabel('Component 1')
+    plt.ylabel('Component 2')
     plt.grid(True)
-    plt.savefig('Mar15_tsne_y0_noise_scale_e300_neg1.png')
+    plt.savefig('Mar17_tsne_y0_25.png')
     plt.close()
 
     plt.figure(figsize=(8, 6))
     for label in range(num_classes):
         idx = labels_array == label
         plt.scatter(tsne_pixel[idx, 0], tsne_pixel[idx, 1], s=10, color=distinct_colors[label], label=str(label))
-    plt.title('t-SNE Projection of g-net Output')
-    # plt.xlabel('Component 1')
-    # plt.ylabel('Component 2')
+    plt.title('t-SNE Plot')
+    plt.xlabel('Component 1')
+    plt.ylabel('Component 2')
     plt.grid(True)
-    plt.savefig('Mar15_tsne_g_pixel_noise_scale_e300_neg1.png')
-
+    plt.savefig('Mar17_tsne_g_pixel_25.png')
 
     # plt.figure(figsize=(8, 6))
     # for label in range(num_classes):
@@ -307,7 +311,7 @@ if __name__ == "__main__":
     #                     level = logging.DEBUG,
     #                     format = '%(asctime)s:%(levelname)s:%(name)s:%(message)s')
     # load the convolution part of pre-trained encoder
-    path_g_net = "Mar7_point_net_v2_Summation.pth"
+    path_g_net = "Mar15_point_net_v3_25_train.pth"
     g_trained_state_dict = torch.load(path_g_net)
     state_dict = {k: v for k, v in g_trained_state_dict.items() if 'base_pointnet' in k}  # Filter to get only 'i2h' parameters
     state_dict = {key.replace('base_pointnet.', ''): value for key, value in state_dict.items()}
@@ -315,7 +319,7 @@ if __name__ == "__main__":
     g_net.load_state_dict(state_dict)
     g_net = g_net.to(device)
     g_net.eval()
-    PATH_f = f"Mar14_f_rnn_v18_noise_scale_neg1_lr0.001_e10.pth"
+    PATH_f = f"Mar16_f_rnn_v18_25.pth"
     
     # load model for testing
     trained_f_net = DRNetTest().to(device)
@@ -323,7 +327,7 @@ if __name__ == "__main__":
     trained_f_net.eval()
 
     # load decoder for testing
-    PATH_d = 'Mar15_decoder_noise_scale_neg1_lr0.001_e300.pth'
+    PATH_d = 'Mar16_decoder_25.pth'
     trained_decoder = ClassificationPointNet(num_classes=10, point_dimension=3).to(device)
     trained_decoder.load_state_dict(torch.load(PATH_d, map_location=torch.device('cpu')), strict=False)
     trained_decoder.eval()

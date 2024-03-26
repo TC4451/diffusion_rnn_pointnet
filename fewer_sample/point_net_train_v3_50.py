@@ -1,4 +1,6 @@
 # https://datascienceub.medium.com/pointnet-implementation-explained-visually-c7e300139698
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 import torch
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset
@@ -155,14 +157,14 @@ model = model.to(device)
 import os
 # os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 # training model
-epochs=80
+epochs=200
 train_loss = []
 test_loss = []
 train_acc = []
 test_acc = []
 best_loss= np.inf
 
-fn = "Mar15_point_net_v3_half_train"
+fn = "Mar15_point_net_v3_50_train"
 
 # get coordinates of pixels
 coords_x, coords_y = torch.meshgrid(torch.arange(0, 28), torch.arange(0, 28))
@@ -244,7 +246,9 @@ for epoch in range(epochs):
             'model':model.state_dict(),
             'optimizer':optimizer.state_dict()
         }
-        # torch.save(state, os.path.join('checkpoints', '3Dmnist_checkpoint_%s.pth' % (number_of_points)))
+        path_point_net = fn + ".pth"
+        # torch.save(state, path_point_net)
+        torch.save(model.state_dict(), path_point_net)
         best_loss=np.mean(test_loss)
 
     train_loss.append(np.mean(epoch_train_loss))
@@ -252,5 +256,5 @@ for epoch in range(epochs):
     train_acc.append(np.mean(epoch_train_acc))
     test_acc.append(np.mean(epoch_test_acc))
 
-path_point_net = fn + ".pth"
-torch.save(model.state_dict(), path_point_net)
+# path_point_net = fn + ".pth"
+# torch.save(model.state_dict(), path_point_net)

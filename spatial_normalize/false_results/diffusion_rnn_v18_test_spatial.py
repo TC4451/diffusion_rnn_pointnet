@@ -134,14 +134,10 @@ class ClassificationPointNet(nn.Module):
 
         return F.log_softmax(self.fc_3(x), dim=1)
     
-# tranform image to 3D (x, y, binary value)
-def img_to_3d(img):
-    # get coordinates of pixels
-    coords_x, coords_y = torch.meshgrid(torch.arange(0, img.size(1)), torch.arange(0, img.size(2)))
-    coords_x = coords_x.flatten().float().unsqueeze(1)
-    coords_y = coords_y.flatten().float().unsqueeze(1)
-    values = img.view(-1).unsqueeze(1)
-    pc = torch.cat((coords_x, coords_y, values), dim=1)
+# tranform image to 11D (x, y, binary value)
+def img_pos_expand(img):
+    values = img.view(-1, 1)
+    pc = torch.cat((binary_matrix, values), dim=1)
     return pc
 
 class DRNetTest(nn.Module):
@@ -150,10 +146,10 @@ class DRNetTest(nn.Module):
 
         self.h2h = nn.Sequential(
             nn.Linear(256, 784),
-            nn.BatchNorm1d(784),
+            # nn.BatchNorm1d(784),
             nn.ReLU(),
             nn.Linear(784, 784),
-            nn.BatchNorm1d(784),
+            # nn.BatchNorm1d(784),
             nn.ReLU(),
             nn.Linear(784, 256),
         )
@@ -172,7 +168,7 @@ class DRNetTest(nn.Module):
             sigma_t = math.sqrt(a_t*(1-a_t))
 
             # epsilon ~ N(0, I) * 1e-2
-            epsilon = 1e-1 * torch.randn_like(latent_y_T)
+            epsilon = 1e-2 * torch.randn_like(latent_y_T)
             
             # locate the g(x) at current timepoint
             x_point = g_pixel_tensor[:, :, t_prime].view(g_pixel_tensor.size(0), -1)
@@ -199,7 +195,7 @@ def test_f(point_net, trained_f_net, trained_decoder, params):
         for i, (images, labels) in enumerate(testloader):
             batch_pc = []
             for img in images:
-                batch_pc.append(img_to_3d(img))
+                batch_pc.append(img_pos_expand(img))
             pc = torch.stack(batch_pc, dim=0)
             pc = pc.to(torch.float32).to(device)
             x, feature_transform, tnet_out = point_net(pc)
@@ -214,7 +210,7 @@ def test_f(point_net, trained_f_net, trained_decoder, params):
             print('test accuracy: {}'.format(accuracy))
 
             
-            if i%2==0:
+            if i%2==1:
                 encoding.append(f_out)
                 original_pixel.append(x.view(images.size(0), -1))
                 labels_list.append(labels.to(device))
@@ -257,23 +253,22 @@ def test_f(point_net, trained_f_net, trained_decoder, params):
     for label in range(num_classes):
         idx = labels_array == label
         plt.scatter(tsne_data[idx, 0], tsne_data[idx, 1], s=10, color=distinct_colors[label], label=str(label))
-    plt.title('t-SNE Projection of f-net Output')
-    # plt.xlabel('Component 1')
-    # plt.ylabel('Component 2')
+    plt.title('t-SNE Plot')
+    plt.xlabel('Component 1')
+    plt.ylabel('Component 2')
     plt.grid(True)
-    plt.savefig('Mar15_tsne_y0_noise_scale_e300_neg1.png')
+    plt.savefig('Mar14_tsne_nobn_y0.png')
     plt.close()
 
     plt.figure(figsize=(8, 6))
     for label in range(num_classes):
         idx = labels_array == label
         plt.scatter(tsne_pixel[idx, 0], tsne_pixel[idx, 1], s=10, color=distinct_colors[label], label=str(label))
-    plt.title('t-SNE Projection of g-net Output')
-    # plt.xlabel('Component 1')
-    # plt.ylabel('Component 2')
+    plt.title('t-SNE Plot')
+    plt.xlabel('Component 1')
+    plt.ylabel('Component 2')
     plt.grid(True)
-    plt.savefig('Mar15_tsne_g_pixel_noise_scale_e300_neg1.png')
-
+    plt.savefig('Mar14_tsne_nobn_g_pixel.png')
 
     # plt.figure(figsize=(8, 6))
     # for label in range(num_classes):
@@ -299,7 +294,7 @@ if __name__ == "__main__":
         "lr_f": 0.001,
         "num_epochs": 10, 
         "noise_scale": 1e-3,
-        "point_dimension": 3
+        "point_dimension": 11
     }
 
     # # configurate logging function
@@ -307,7 +302,7 @@ if __name__ == "__main__":
     #                     level = logging.DEBUG,
     #                     format = '%(asctime)s:%(levelname)s:%(name)s:%(message)s')
     # load the convolution part of pre-trained encoder
-    path_g_net = "Mar7_point_net_v2_Summation.pth"
+    path_g_net = "/mnt/VOL1/fangzhou/local/trainningcode/Zilin_PointNet-WPI3/spatial_expand/Mar11_point_net_v5_spatial.pth"
     g_trained_state_dict = torch.load(path_g_net)
     state_dict = {k: v for k, v in g_trained_state_dict.items() if 'base_pointnet' in k}  # Filter to get only 'i2h' parameters
     state_dict = {key.replace('base_pointnet.', ''): value for key, value in state_dict.items()}
@@ -315,7 +310,19 @@ if __name__ == "__main__":
     g_net.load_state_dict(state_dict)
     g_net = g_net.to(device)
     g_net.eval()
-    PATH_f = f"Mar14_f_rnn_v18_noise_scale_neg1_lr0.001_e10.pth"
+    PATH_f = f"/mnt/VOL1/fangzhou/local/trainningcode/Zilin_PointNet-WPI3/spatial_expand/Mar12_f_rnn_v18_spatial _nobn_lr0.001_e10.pth"
+
+    # get coordinates of pixels
+    binary_matrix = torch.zeros((10, 784), dtype=torch.int8)
+
+    # Loop through each column and convert the integer to its binary representation
+    for i in range(1, 784 + 1):
+        # Get binary representation of the number, fill to make 10 bits, and reverse it
+        binary_representation = torch.tensor([int(x) for x in bin(i)[2:].zfill(10)], dtype=torch.int8)
+        
+        # Assign the binary representation to the corresponding column
+        binary_matrix[:, i - 1] = binary_representation.flip(dims=[0])  # Flip to match the example's orientation
+    binary_matrix = binary_matrix.transpose(1, 0)
     
     # load model for testing
     trained_f_net = DRNetTest().to(device)
@@ -323,8 +330,8 @@ if __name__ == "__main__":
     trained_f_net.eval()
 
     # load decoder for testing
-    PATH_d = 'Mar15_decoder_noise_scale_neg1_lr0.001_e300.pth'
-    trained_decoder = ClassificationPointNet(num_classes=10, point_dimension=3).to(device)
+    PATH_d = '/mnt/VOL1/fangzhou/local/trainningcode/Zilin_PointNet-WPI3/spatial_expand/Mar13_decoder_spatial_nobn_lr0.001_e1000.pth'
+    trained_decoder = ClassificationPointNet(num_classes=10, point_dimension=params['point_dimension']).to(device)
     trained_decoder.load_state_dict(torch.load(PATH_d, map_location=torch.device('cpu')), strict=False)
     trained_decoder.eval()
     test_f(g_net, trained_f_net, trained_decoder, params)

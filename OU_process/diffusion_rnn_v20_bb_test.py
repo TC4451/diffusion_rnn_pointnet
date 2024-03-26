@@ -9,6 +9,8 @@ import math
 import matplotlib as plt
 import logging
 import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
 
 # load MNIST dataset, convert to binary pixel values
 mnist_train = datasets.MNIST(root='/mnt/VOL1/fangzhou/local/data/zilin_data/data', train=True, download=True,
@@ -16,13 +18,13 @@ mnist_train = datasets.MNIST(root='/mnt/VOL1/fangzhou/local/data/zilin_data/data
                                  transforms.ToTensor(),
                                  transforms.Lambda(lambda x: torch.where(x > 0,1,0))
                              ]))
-trainloader = torch.utils.data.DataLoader(mnist_train, batch_size=32, shuffle=False)
+trainloader = torch.utils.data.DataLoader(mnist_train, batch_size=64, shuffle=False)
 mnist_test = datasets.MNIST(root='/mnt/VOL1/fangzhou/local/data/zilin_data/data', train=False, download=True,
                              transform=transforms.Compose([
                                  transforms.ToTensor(),
                                  transforms.Lambda(lambda x: torch.where(x > 0,1,0))
                              ]))
-testloader = torch.utils.data.DataLoader(mnist_test, batch_size=32, shuffle=False)
+testloader = torch.utils.data.DataLoader(mnist_test, batch_size=64, shuffle=False)
 # set device to run
 torch.cuda.set_device(0)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -64,7 +66,6 @@ class TransformationNet(nn.Module):
         x = self.fc_3(x)
 
         identity_matrix = torch.eye(self.output_dim)
-        # if torch.cuda.is_available():
         identity_matrix = identity_matrix.cuda()
         x = x.view(-1, self.output_dim, self.output_dim) + identity_matrix
         return x
@@ -159,7 +160,7 @@ class DRNetTest(nn.Module):
         )
 
     def forward(self, T, g_pixel_tensor):
-        latent_y_T = torch.zeros(g_pixel_tensor.size(0), 256).to(device)
+        y_T = torch.zeros(g_pixel_tensor.size(0), 256).to(device)
 
         # t ~ Uniform ({1, ...T})
         timestep = torch.arange(T, 0, -1)
@@ -167,22 +168,24 @@ class DRNetTest(nn.Module):
 
         for t in timestep:
             # set eq
-            a_t = (t+1)/(T+1)
+            alpha_t = 1 - (t+1)/(T+1)
+            alpha_T = 1 - (T+1)/(T+1)
+            a_t = (1-alpha_t)/(1-alpha_T)
             t_prime = T-t 
             sigma_t = math.sqrt(a_t*(1-a_t))
 
             # epsilon ~ N(0, I) * 1e-2
-            epsilon = 1e-1 * torch.randn_like(latent_y_T)
+            epsilon = 1e-1 * torch.randn_like(y_T)
             
             # locate the g(x) at current timepoint
             x_point = g_pixel_tensor[:, :, t_prime].view(g_pixel_tensor.size(0), -1)
             # predict the link to embedding of next timestep
-            input = latent_y_T + x_point
+            input = y_T + x_point
             out = self.h2h(input)
             # calculate the location of embedding of next timestep
-            latent_y_T = latent_y_T + x_point + out + sigma_t*epsilon
+            y_T = y_T + x_point + out + sigma_t*epsilon
 
-        return latent_y_T
+        return y_T
 
 # Test function for f
 def test_f(point_net, trained_f_net, trained_decoder, params):
@@ -233,9 +236,6 @@ def test_f(point_net, trained_f_net, trained_decoder, params):
     original_pixel = torch.cat(original_pixel, dim=0)
     # predictions = torch.cat(predictions, dim=0)
 
-    import matplotlib.pyplot as plt
-    from sklearn.manifold import TSNE
-
     # Convert tensor to NumPy array
     data_array = cat_encoding.cpu().detach().numpy()
     labels_array = all_labels.cpu().detach().numpy()
@@ -261,7 +261,7 @@ def test_f(point_net, trained_f_net, trained_decoder, params):
     # plt.xlabel('Component 1')
     # plt.ylabel('Component 2')
     plt.grid(True)
-    plt.savefig('Mar15_tsne_y0_noise_scale_e300_neg1.png')
+    plt.savefig('Mar20_tsne_bb_y0.png')
     plt.close()
 
     plt.figure(figsize=(8, 6))
@@ -272,7 +272,7 @@ def test_f(point_net, trained_f_net, trained_decoder, params):
     # plt.xlabel('Component 1')
     # plt.ylabel('Component 2')
     plt.grid(True)
-    plt.savefig('Mar15_tsne_g_pixel_noise_scale_e300_neg1.png')
+    plt.savefig('Mar20_tsne_bb_g_pixel.png')
 
 
     # plt.figure(figsize=(8, 6))
@@ -302,10 +302,6 @@ if __name__ == "__main__":
         "point_dimension": 3
     }
 
-    # # configurate logging function
-    # logging.basicConfig(filename = f"Mar8_f_rnn_v18_AvgPool_lr{params['lr_f']}_e{params['num_epochs']}_loss.log",
-    #                     level = logging.DEBUG,
-    #                     format = '%(asctime)s:%(levelname)s:%(name)s:%(message)s')
     # load the convolution part of pre-trained encoder
     path_g_net = "Mar7_point_net_v2_Summation.pth"
     g_trained_state_dict = torch.load(path_g_net)
@@ -315,7 +311,7 @@ if __name__ == "__main__":
     g_net.load_state_dict(state_dict)
     g_net = g_net.to(device)
     g_net.eval()
-    PATH_f = f"Mar14_f_rnn_v18_noise_scale_neg1_lr0.001_e10.pth"
+    PATH_f = f"Mar19_f_rnn_v20.pth"
     
     # load model for testing
     trained_f_net = DRNetTest().to(device)
@@ -323,7 +319,7 @@ if __name__ == "__main__":
     trained_f_net.eval()
 
     # load decoder for testing
-    PATH_d = 'Mar15_decoder_noise_scale_neg1_lr0.001_e300.pth'
+    PATH_d = 'Mar19_decoder_bb.pth'
     trained_decoder = ClassificationPointNet(num_classes=10, point_dimension=3).to(device)
     trained_decoder.load_state_dict(torch.load(PATH_d, map_location=torch.device('cpu')), strict=False)
     trained_decoder.eval()
