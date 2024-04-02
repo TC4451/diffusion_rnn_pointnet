@@ -165,6 +165,8 @@ class DRNetTest(nn.Module):
             # y_t = y_t.unsqueeze(0).float()
             # predict the link to embedding of next timestep
             # input = latent_y_T + x_point
+            # print(x_point.size())
+            # print(latent_y_T.size())
             out, hidden = self.basic_rnn(x_point, latent_y_T)
             # out = self.basic_rnn(input)
             # calculate the location of embedding of next timestep
@@ -240,7 +242,8 @@ def train_d(trained_f_net, point_net, params):
             x, feature_transform, tnet_out = point_net(pc)
             feature_transform_list.append(feature_transform)
 
-            f_out = trained_f_net(T, x)
+            flat_img = images.view(images.size(0), -1).to(device)
+            f_out = trained_f_net(T, flat_img)
             
             # record the labels and y_0 predicted
             nlabels = labels.clone().detach()

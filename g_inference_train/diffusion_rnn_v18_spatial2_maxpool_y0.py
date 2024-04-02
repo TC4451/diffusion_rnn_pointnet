@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 import torch
 import torch.nn as nn
 from torchvision import datasets, transforms
@@ -112,15 +112,30 @@ class BasePointNet(nn.Module):
 
         return x, feature_transform, tnet_out
     
-# tranform image to 3D (x, y, binary value)
-def img_to_3d(img):
-    # get coordinates of pixels
-    coords_x, coords_y = torch.meshgrid(torch.arange(0, img.size(1)), torch.arange(0, img.size(2)))
-    coords_x = coords_x.flatten().float().unsqueeze(1)
-    coords_y = coords_y.flatten().float().unsqueeze(1)
-    values = img.view(-1).unsqueeze(1)
-    pc = torch.cat((coords_x, coords_y, values), dim=1)
+def img_block_pos_expand(img_block, base):
+    dim = img_block.shape
+    values = img_block.view(dim[0], -1, 1)
+    spacial_encoding_mat = torch.from_numpy(get_pos_matrix(values.shape[1], base_num=base)).T
+    spacial_encoding_mat = spacial_encoding_mat.expand(dim[0], spacial_encoding_mat.shape[0], spacial_encoding_mat.shape[1])
+    pc = torch.cat((spacial_encoding_mat, values), dim=2)
     return pc
+
+def get_pos_matrix(n, base_num):
+    # get the number of binary digits to represent n
+    dim = int(np.ceil(np.log(n) / np.log(base_num)))
+
+    mat = np.zeros((dim, base_num**dim), dtype=int)
+    # basic pattern
+    base = np.array([range(base_num)])
+
+    for ii in range(dim):
+        # number of same numbers in a row (repeat along row)
+        unit = np.repeat(base, base_num**(ii), axis=1)
+        # number of repeats (repeat along column)
+        full = np.repeat(unit, base_num**(dim-ii-1), axis=0)
+        mat[ii] = full.flatten()
+    norm_mat = mat / base_num  # will give error from 0/0, but not important
+    return norm_mat[:, 1:n+1]
 
 # Diffusion rnn network
 class DRNet(nn.Module):
@@ -138,12 +153,10 @@ class DRNet(nn.Module):
             nn.Linear(784, 256),
         )
 
-    def forward(self, T, g_cumsum, g_pixel_tensor, loss_fn, L):
+    def forward(self, T, g_cumsum, g_pixel_tensor, loss_fn, L, g_inf_tensor, latent_y_0):
 
         # t ~ Uniform ({1, ...T})
         timestep = torch.arange(1, T+1, 1)
-        # Initialize y_0 
-        latent_y_0 = g_cumsum[:, :, T-1]
 
         for t in timestep:
             # set eq
@@ -164,8 +177,9 @@ class DRNet(nn.Module):
 
             # locate the g(x) at current timepoint
             x_point = g_pixel_tensor[:, :, t_prime-1].view(g_pixel_tensor.size(0), -1)
+            learned_x_point = g_inf_tensor[:, :, t_prime-1].view(g_inf_tensor.size(0), -1)
             # learn link from sample in the current timepoint sphere to the previous point
-            input = y_t + x_point
+            input = y_t + learned_x_point
             out = self.h2h(input)
 
             # training loss
@@ -184,6 +198,7 @@ def train_f(point_net, params):
     T = params['T']
     # Initialize network
     f_net = DRNet().to(device)
+    g_inf_net = BasePointNet(point_dimension=params['point_dimension']).to(device)
     optimizer = torch.optim.AdamW(f_net.parameters(), lr)
     loss_fn = torch.nn.MSELoss().to(device)
     for e in range(num_epochs):
@@ -196,19 +211,22 @@ def train_f(point_net, params):
             L = loss_fn(y_0, y_0)
             L.zero_()
             
-            batch_pc = []
-            for img in images:
-                batch_pc.append(img_to_3d(img))
-            pc = torch.stack(batch_pc, dim=0)
+            pc = img_block_pos_expand(images, params['base_num'])
             pc = pc.to(torch.float32).to(device)
             x, feature_transform, tnet_out = point_net(pc)
+            inf_x, inf_ft, inf_tnet_out = g_inf_net(pc)
 
             # take the sum from timestep T to 0, reverse order
             g_pixel_tensor = torch.flip(x, dims=[2])
             g_cumsum = torch.cumsum(g_pixel_tensor, dim=2).to(device)
+            g_inf_tensor = torch.flip(inf_x, dims=[2])
+
+            # maxpool to obtain y_0
+            latent_y_0 = nn.MaxPool1d(784)(x)
+            latent_y_0 = latent_y_0.view(-1, 256)
 
             # train f_net
-            f_out, L = f_net(T, g_cumsum, g_pixel_tensor, loss_fn, L)
+            f_out, L = f_net(T, g_cumsum, g_pixel_tensor, loss_fn, L, g_inf_tensor, latent_y_0)
 
             # back propagation
             optimizer.zero_grad()
@@ -219,7 +237,7 @@ def train_f(point_net, params):
             logging.info(f"Epoch [{e+1}/{num_epochs}], Loss: {L.item():.6f}")
             torch.cuda.empty_cache()
         torch.cuda.empty_cache()
-    return f_net
+    return f_net, g_inf_net
 
 if __name__ == "__main__":
     params = {
@@ -230,13 +248,15 @@ if __name__ == "__main__":
         "channel_count": 1,
         "T": 28 * 28,
         "lr_f": 0.001,
-        "num_epochs": 10, 
+        "num_epochs": 5, 
         "noise_scale": 1e-3,
-        "point_dimension": 3
+        "point_dimension": 11,
+        "base_num": 2
     }
 
-    fn_f = f"Mar14_f_rnn_v18_noise_scale_neg1_lr{params['lr_f']}_e{params['num_epochs']}"
-    path_g_net = "Mar7_point_net_v2_Summation.pth"
+    fn_f = f"Mar28_f_rnn_v18_sp2_maxpool_y0"
+    fn_g_inf = f"Mar28_g_inf_sp2_maxpool_y0"
+    path_g_net = "Mar28_point_net_spatial2_maxpool.pth"
 
     # configurate logging function
     logging.basicConfig(filename = fn_f + ".log",
@@ -251,6 +271,8 @@ if __name__ == "__main__":
     g_net = g_net.to(device)
     g_net.eval()
     PATH_f = fn_f + ".pth"
+    PATH_g_inf = fn_g_inf + ".pth"
     # save model
-    f_net = train_f(g_net, params)
+    f_net, g_inf_net = train_f(g_net, params)
     torch.save(f_net.state_dict(), PATH_f)
+    torch.save(g_inf_net.state_dict(), PATH_g_inf)

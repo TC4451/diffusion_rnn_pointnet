@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 import torch
 import torch.nn as nn
 from torchvision import datasets, transforms
@@ -15,13 +15,13 @@ mnist_train = datasets.MNIST(root='./data', train=True, download=True,
                                  transforms.ToTensor(),
                                  transforms.Lambda(lambda x: torch.where(x > 0,1,0))
                              ]))
-trainloader = torch.utils.data.DataLoader(mnist_train, batch_size=128, shuffle=False)
+trainloader = torch.utils.data.DataLoader(mnist_train, batch_size=64, shuffle=False)
 mnist_test = datasets.MNIST(root='./data', train=False, download=True,
                              transform=transforms.Compose([
                                  transforms.ToTensor(),
                                  transforms.Lambda(lambda x: torch.where(x > 0,1,0))
                              ]))
-testloader = torch.utils.data.DataLoader(mnist_test, batch_size=128, shuffle=False)
+testloader = torch.utils.data.DataLoader(mnist_test, batch_size=64, shuffle=False)
 # set device to run
 torch.cuda.set_device(0)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -191,7 +191,7 @@ def get_pos_matrix(n, base_num):
         mat[ii] = full.flatten()
 
     norm = np.sum(mat, axis=0)
-    norm_mat = mat / norm  # will give error from 0/0, but not important
+    norm_mat = mat / base_num  # will give error from 0/0, but not important
     return norm_mat[:, 1:n+1]
 
 # Train function for f
@@ -215,7 +215,7 @@ def train_f(point_net, params):
             L.zero_()
             
             batch_pc = []
-            batch_pc = img_block_pos_expand(images, base_num=3)
+            batch_pc = img_block_pos_expand(images, base_num=params['base_num'])
             pc = batch_pc.to(torch.float32).to(device)
             x, feature_transform, tnet_out = point_net(pc)
 
@@ -248,11 +248,12 @@ if __name__ == "__main__":
         "lr_f": 0.001,
         "num_epochs": 10, 
         "noise_scale": 1e-3,
-        "point_dimension": 8
+        "point_dimension": 6,
+        "base_num": 4
     }
 
-    fn_f = f"Mar25_f_rnn_v18_spatial_3"
-    path_g_net = "Mar18_point_net_v5_spatial_3.pth"
+    fn_f = f"Mar25_f_rnn_v18_spatial_4"
+    path_g_net = "Mar18_point_net_v5_spatial_4.pth"
 
     # configurate logging function
     logging.basicConfig(filename = fn_f + ".log",

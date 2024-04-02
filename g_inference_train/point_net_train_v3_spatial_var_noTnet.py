@@ -1,8 +1,10 @@
 # https://datascienceub.medium.com/pointnet-implementation-explained-visually-c7e300139698
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 import torch
 from torchvision import datasets, transforms
+import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 import logging
 import time 
@@ -20,79 +22,46 @@ mnist_test = datasets.MNIST(root='./data', train=False, download=True,
                                  transforms.Lambda(lambda x: torch.where(x > 0,1,0))
                              ]))
 testloader = torch.utils.data.DataLoader(mnist_test, batch_size=64, shuffle=False)
-
-# # tranform image to 3D (x, y, binary value)
-# def img_pos_expand(img):
-#     # print(values.size())
-#     # print(binary_matrix.size())
-#     values = img.view(-1, 1)
-#     spacial_encoding_mat = torch.from_numpy(get_pos_matrix(len(values), base_num=5)).T
-#     # print(values.shape)
-#     # print(spacial_encoding_mat.shape)
-#     pc = torch.cat((spacial_encoding_mat, values), dim=1)
-#     # pc = torch.cat((spacial_encoding_mat, values), dim=1)
-#     return pc
-
-
-def img_block_pos_expand(img_block):
-    # print(values.size())
-    # print(binary_matrix.size())
-    dim = img_block.shape
-    values = img_block.view(dim[0], -1, 1)
-    spacial_encoding_mat = torch.from_numpy(get_pos_matrix(values.shape[1], base_num=5)).T
-    # print("spacial_encoding_mat", spacial_encoding_mat.shape)
-    spacial_encoding_mat = spacial_encoding_mat.expand(dim[0], spacial_encoding_mat.shape[0], spacial_encoding_mat.shape[1])
-    # print("values", values.shape)
-    # print("spacial_encoding_mat", spacial_encoding_mat.shape)
-    pc = torch.cat((spacial_encoding_mat, values), dim=2)
-    # print("pc", pc.shape)
-    # pc = torch.cat((spacial_encoding_mat, values), dim=1)
-    return pc
-
-# model
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
   
-class TransformationNet(nn.Module):
+# class TransformationNet(nn.Module):
 
-    def __init__(self, input_dim, output_dim):
-        super(TransformationNet, self).__init__()
-        self.output_dim = output_dim
+#     def __init__(self, input_dim, output_dim):
+#         super(TransformationNet, self).__init__()
+#         self.output_dim = output_dim
 
-        self.conv_1 = nn.Conv1d(input_dim, 64, 1)
-        self.conv_2 = nn.Conv1d(64, 128, 1)
-        self.conv_3 = nn.Conv1d(128, 256, 1)
+#         self.conv_1 = nn.Conv1d(input_dim, 64, 1)
+#         self.conv_2 = nn.Conv1d(64, 128, 1)
+#         self.conv_3 = nn.Conv1d(128, 256, 1)
 
-        self.bn_1 = nn.BatchNorm1d(64)
-        self.bn_2 = nn.BatchNorm1d(128)
-        self.bn_3 = nn.BatchNorm1d(256)
-        self.bn_4 = nn.BatchNorm1d(256)
-        self.bn_5 = nn.BatchNorm1d(128)
+#         self.bn_1 = nn.BatchNorm1d(64)
+#         self.bn_2 = nn.BatchNorm1d(128)
+#         self.bn_3 = nn.BatchNorm1d(256)
+#         self.bn_4 = nn.BatchNorm1d(256)
+#         self.bn_5 = nn.BatchNorm1d(128)
 
-        self.fc_1 = nn.Linear(256, 256)
-        self.fc_2 = nn.Linear(256, 128)
-        self.fc_3 = nn.Linear(128, self.output_dim*self.output_dim)
+#         self.fc_1 = nn.Linear(256, 256)
+#         self.fc_2 = nn.Linear(256, 128)
+#         self.fc_3 = nn.Linear(128, self.output_dim*self.output_dim)
 
-    def forward(self, x):
-        num_points = x.shape[1]
-        x = x.transpose(2, 1)
-        x = F.relu(self.bn_1(self.conv_1(x)))
-        x = F.relu(self.bn_2(self.conv_2(x)))
-        x = F.relu(self.bn_3(self.conv_3(x)))
+#     def forward(self, x):
+#         num_points = x.shape[1]
+#         x = x.transpose(2, 1)
+#         x = F.relu(self.bn_1(self.conv_1(x)))
+#         x = F.relu(self.bn_2(self.conv_2(x)))
+#         x = F.relu(self.bn_3(self.conv_3(x)))
 
-        x = nn.MaxPool1d(num_points)(x)
-        x = x.view(-1, 256)
+#         x = nn.MaxPool1d(num_points)(x)
+#         x = x.view(-1, 256)
 
-        x = F.relu(self.bn_4(self.fc_1(x)))
-        x = F.relu(self.bn_5(self.fc_2(x)))
-        x = self.fc_3(x)
+#         x = F.relu(self.bn_4(self.fc_1(x)))
+#         x = F.relu(self.bn_5(self.fc_2(x)))
+#         x = self.fc_3(x)
 
-        identity_matrix = torch.eye(self.output_dim)
-        if torch.cuda.is_available():
-            identity_matrix = identity_matrix.cuda()
-        x = x.view(-1, self.output_dim, self.output_dim) + identity_matrix
-        return x
+#         identity_matrix = torch.eye(self.output_dim)
+#         if torch.cuda.is_available():
+#             identity_matrix = identity_matrix.cuda()
+#         x = x.view(-1, self.output_dim, self.output_dim) + identity_matrix
+#         return x
 
 
 class BasePointNet(nn.Module):
@@ -100,8 +69,8 @@ class BasePointNet(nn.Module):
     def __init__(self, point_dimension):
         super(BasePointNet, self).__init__()
         # print(f"____point dim:{point_dimension}")
-        self.input_transform = TransformationNet(input_dim=point_dimension, output_dim=point_dimension)
-        self.feature_transform = TransformationNet(input_dim=64, output_dim=64)
+        # self.input_transform = TransformationNet(input_dim=point_dimension, output_dim=point_dimension)
+        # self.feature_transform = TransformationNet(input_dim=64, output_dim=64)
         
         self.conv_1 = nn.Conv1d(point_dimension, 64, 1)
         self.conv_2 = nn.Conv1d(64, 64, 1)
@@ -119,25 +88,25 @@ class BasePointNet(nn.Module):
     def forward(self, x, plot=False):
         num_points = x.shape[1]
         
-        input_transform = self.input_transform(x) # T-Net tensor [batch, 3, 3]
-        x = torch.bmm(x, input_transform) # Batch matrix-matrix product 
+        # input_transform = self.input_transform(x) # T-Net tensor [batch, 3, 3]
+        # x = torch.bmm(x, input_transform) # Batch matrix-matrix product 
         x = x.transpose(2, 1) 
-        tnet_out=x.cpu().detach().numpy()
+        # tnet_out=x.cpu().detach().numpy()
         
         x = F.relu(self.bn_1(self.conv_1(x)))
         x = F.relu(self.bn_2(self.conv_2(x)))
-        x = x.transpose(2, 1)
+        # x = x.transpose(2, 1)
 
-        feature_transform = self.feature_transform(x) # T-Net tensor [batch, 64, 64]
-        x = torch.bmm(x, feature_transform)
-        x = x.transpose(2, 1)
+        # feature_transform = self.feature_transform(x) # T-Net tensor [batch, 64, 64]
+        # x = torch.bmm(x, feature_transform)
+        # x = x.transpose(2, 1)
         x = F.relu(self.bn_3(self.conv_3(x)))
         x = F.relu(self.bn_4(self.conv_4(x)))
-        x = F.relu(self.bn_5(self.conv_5(x)))
-        x = nn.AvgPool1d(num_points)(x)  # max-pooling
+        x = F.relu(self.bn_5(self.conv_5(x))) 
+        x = torch.sum(x, dim=2)  # summation
         x = x.view(-1, 256)  # global feature vector 
 
-        return x, feature_transform, tnet_out
+        return x
 
 
 class ClassificationPointNet(nn.Module):
@@ -156,39 +125,21 @@ class ClassificationPointNet(nn.Module):
         self.dropout_1 = nn.Dropout(dropout)
 
     def forward(self, x):
-        x, feature_transform, tnet_out = self.base_pointnet(x)
+        x = self.base_pointnet(x)
 
         x = F.relu(self.bn_1(self.fc_1(x)))
         x = F.relu(self.bn_2(self.fc_2(x)))
         x = self.dropout_1(x)
 
-        return F.log_softmax(self.fc_3(x), dim=1), feature_transform, tnet_out
+        return F.log_softmax(self.fc_3(x), dim=1)
 
-fn = "Mar18_point_net_v5_spatial_5"
-
-path_point_net = fn + ".pth" 
-# state_dict = torch.load(path_point_net)
-model = ClassificationPointNet(num_classes=10,
-                                   point_dimension=6)
-# model.load_state_dict(state_dict)
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = model.to(device)
-
-logging.basicConfig(filename = fn + ".log",
-                    level = logging.DEBUG,
-                    format = '%(asctime)s:%(levelname)s:%(name)s:%(message)s')
-
-# def int_to_base3(n):
-#     """Convert an integer to its base-3 representation as a list of digits."""
-#     if n == 0:
-#         return [0]
-#     digits = []
-#     while n:
-#         digits.append(int(n % 3))
-#         n //= 3
-#     return digits[::-1]
-
+def img_block_pos_expand(img_block, base):
+    dim = img_block.shape
+    values = img_block.view(dim[0], -1, 1)
+    spacial_encoding_mat = torch.from_numpy(get_pos_matrix(values.shape[1], base_num=base)).T
+    spacial_encoding_mat = spacial_encoding_mat.expand(dim[0], spacial_encoding_mat.shape[0], spacial_encoding_mat.shape[1])
+    pc = torch.cat((spacial_encoding_mat, values), dim=2)
+    return pc
 
 def get_pos_matrix(n, base_num):
     # get the number of binary digits to represent n
@@ -204,20 +155,25 @@ def get_pos_matrix(n, base_num):
         # number of repeats (repeat along column)
         full = np.repeat(unit, base_num**(dim-ii-1), axis=0)
         mat[ii] = full.flatten()
-
-    # norm = np.sum(mat, axis=0)
-    # print(norm)
-    # mat = mat / norm
-    # # print(mat)
-    # return mat[:, 1:n+1]
-
-    norm = np.sum(mat, axis=0)
-    # print(norm)
-    # print(mat)
-    norm_mat = mat / norm  # will give error from 0/0, but not important
+    norm_mat = mat / base_num  # will give error from 0/0, but not important
     return norm_mat[:, 1:n+1]
 
+fn = "Mar28_point_net_spatial2_noTnet"
+base_num = 2
+point_dim = 11
 
+path_point_net = fn + ".pth" 
+# state_dict = torch.load(path_point_net)
+model = ClassificationPointNet(num_classes=10,
+                                   point_dimension=point_dim)
+# model.load_state_dict(state_dict)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = model.to(device)
+
+logging.basicConfig(filename = fn + ".log",
+                    level = logging.DEBUG,
+                    format = '%(asctime)s:%(levelname)s:%(name)s:%(message)s')
 
 # training model
 epochs=100
@@ -237,19 +193,19 @@ for epoch in range(epochs):
     for i, (images, labels) in enumerate(trainloader):
         batch_pc = []
         # print(type(images), images.shape)
-        batch_pc = img_block_pos_expand(images)
+        batch_pc = img_block_pos_expand(images, base_num)
         pc = batch_pc.to(torch.float32).to(device)
         labels = labels.to(device)
         optimizer.zero_grad()
         model = model.train()
-        preds, feature_transform, tnet_out = model(pc)
+        preds = model(pc)
 
-        identity = torch.eye(feature_transform.shape[-1])
-        identity = identity.to(device)
-        regularization_loss = torch.norm(
-            identity - torch.bmm(feature_transform, feature_transform.transpose(2, 1)))
+        # identity = torch.eye(feature_transform.shape[-1])
+        # identity = identity.to(device)
+        # regularization_loss = torch.norm(
+        #     identity - torch.bmm(feature_transform, feature_transform.transpose(2, 1)))
         # Loss
-        loss = F.nll_loss(preds, labels) + 0.001 * regularization_loss
+        loss = F.nll_loss(preds, labels)
         epoch_train_loss.append(loss.cpu().item())
         loss.backward()
         optimizer.step()
@@ -265,11 +221,11 @@ for epoch in range(epochs):
     # validation loop
     for i, (val_images, val_labels) in enumerate(testloader):
         val_pc = []
-        val_pc = img_block_pos_expand(val_images)
+        val_pc = img_block_pos_expand(val_images, base_num)
         val_pc = val_pc.to(torch.float32).to(device)
         val_labels = val_labels.to(device)
         model = model.eval()
-        val_preds, feature_transform, tnet_out = model(val_pc)
+        val_preds = model(val_pc)
         val_loss = F.nll_loss(val_preds, val_labels)
         epoch_test_loss.append(val_loss.cpu().item())
         val_preds = val_preds.data.max(1)[1]

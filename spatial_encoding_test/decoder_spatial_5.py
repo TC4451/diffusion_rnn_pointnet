@@ -1,6 +1,6 @@
 # https://datascienceub.medium.com/pointnet-implementation-explained-visually-c7e300139698
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -315,16 +315,16 @@ if __name__ == "__main__":
         "noise_scale": 1e-3,
         "lr_d": 0.001,
         "point_dimension": 6,
-        "base_num":4
+        "base_num":5
     }
 
-    fn_d = f"Mar26_decoder_spatial_4"
+    fn_d = f"Mar26_decoder_spatial_5"
     # configurate logging function
     logging.basicConfig(filename = fn_d + ".log",
                         level = logging.DEBUG,
                         format = '%(asctime)s:%(levelname)s:%(name)s:%(message)s')
     # load the convolution part of pre-trained encoder
-    path_point_net = "Mar18_point_net_v5_spatial_4.pth"
+    path_point_net = "Mar18_point_net_v5_spatial_5.pth"
     g_trained_state_dict = torch.load(path_point_net)
     state_dict = {k: v for k, v in g_trained_state_dict.items() if 'base_pointnet' in k}  # Filter to get only 'i2h' parameters
     state_dict = {key.replace('base_pointnet.', ''): value for key, value in state_dict.items()}
@@ -332,7 +332,7 @@ if __name__ == "__main__":
     point_net.load_state_dict(state_dict)
     point_net = point_net.to(device)
     point_net.eval()
-    PATH_f = f"Mar25_f_rnn_v18_spatial_4.pth"
+    PATH_f = f"Mar25_f_rnn_v18_spatial_5.pth"
     PATH_d = fn_d + ".pth"
 
     # load f net

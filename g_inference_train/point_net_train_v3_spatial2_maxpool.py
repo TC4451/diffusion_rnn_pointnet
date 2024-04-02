@@ -103,7 +103,8 @@ class BasePointNet(nn.Module):
         x = F.relu(self.bn_3(self.conv_3(x)))
         x = F.relu(self.bn_4(self.conv_4(x)))
         x = F.relu(self.bn_5(self.conv_5(x))) 
-        x = torch.sum(x, dim=2)  # summation
+        # x = torch.sum(x, dim=2)  # summation
+        x, _ = nn.MaxPool1d(num_points, return_indices=True)(x)
         x = x.view(-1, 256)  # global feature vector 
 
         return x, feature_transform, tnet_out
@@ -158,9 +159,9 @@ def get_pos_matrix(n, base_num):
     norm_mat = mat / base_num  # will give error from 0/0, but not important
     return norm_mat[:, 1:n+1]
 
-fn = "Mar18_point_net_v5_spatial_4"
-base_num = 4
-point_dim = 6
+fn = "Mar28_point_net_spatial2_maxpool"
+base_num = 2
+point_dim = 11
 
 path_point_net = fn + ".pth" 
 # state_dict = torch.load(path_point_net)

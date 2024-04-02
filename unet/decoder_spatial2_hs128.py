@@ -8,6 +8,7 @@ from torchvision import datasets, transforms
 import numpy as np
 import math
 import logging
+from unet_parts import *
 
 
 # load MNIST dataset, convert to binary pixel values
@@ -24,6 +25,72 @@ mnist_test = datasets.MNIST(root='./data', train=False, download=True,
                              ]))
 testloader = torch.utils.data.DataLoader(mnist_test, batch_size=64, shuffle=False)
 device = torch.device("cuda")
+
+class UNet(nn.Module):
+    def __init__(self, n_channels, n_classes, bilinear=True):
+        super(UNet, self).__init__()
+        self.n_channels = n_channels
+        self.n_classes = n_classes
+        self.bilinear = bilinear
+
+        self.inc = DoubleConv(n_channels, 128)
+        self.down1 = Down(128, 128)
+        self.down2 = Down(128, 256)
+        self.down3 = Down(256, 512)
+        factor = 2 if bilinear else 1
+        self.down4 = Down(512, 1024 // factor)
+        self.up1 = Up(1024, 512 // factor, bilinear)
+        self.up2 = Up(512, 256 // factor, bilinear)
+        self.up3 = Up(256, 128 // factor, bilinear)
+        self.up4 = Up(192, 128, bilinear)
+        # self.outc = OutConv(64, n_classes)
+        # self.fc = nn.Sequential(
+        #     nn.Linear(64, 10),
+        #     nn.BatchNorm1d(10), 
+        #     nn.ReLU()
+        # )
+
+    def forward(self, x):
+        x1 = self.inc(x)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4)
+        x = self.up1(x5, x4)
+        x = self.up2(x, x3)
+        x = self.up3(x, x2)
+        x = self.up4(x, x1)
+        # logits = self.outc(x)
+        # x = self.outc(x)
+        x = x.view(x.size(0), x.size(1), -1)
+        # x = torch.sum(x, dim=2).view(x.size(0), -1)
+        # x = self.fc(x)
+        return x
+
+def img_block_pos_expand(img_block, base):
+    dim = img_block.shape
+    values = img_block.view(dim[0], -1, 1)
+    spacial_encoding_mat = torch.from_numpy(get_pos_matrix(values.shape[1], base_num=base)).T
+    spacial_encoding_mat = spacial_encoding_mat.expand(dim[0], spacial_encoding_mat.shape[0], spacial_encoding_mat.shape[1])
+    pc = torch.cat((spacial_encoding_mat, values), dim=2)
+    return pc
+
+def get_pos_matrix(n, base_num):
+    # get the number of binary digits to represent n
+    dim = int(np.ceil(np.log(n) / np.log(base_num)))
+
+    mat = np.zeros((dim, base_num**dim), dtype=int)
+    # basic pattern
+    base = np.array([range(base_num)])
+
+    for ii in range(dim):
+        # number of same numbers in a row (repeat along row)
+        unit = np.repeat(base, base_num**(ii), axis=1)
+        # number of repeats (repeat along column)
+        full = np.repeat(unit, base_num**(dim-ii-1), axis=0)
+        mat[ii] = full.flatten()
+    norm_mat = mat / base_num  # will give error from 0/0, but not important
+    return norm_mat[:, 1:n+1]
 
 # encoder model  
 class TransformationNet(nn.Module):
@@ -78,13 +145,13 @@ class BasePointNet(nn.Module):
         self.conv_2 = nn.Conv1d(64, 64, 1)
         self.conv_3 = nn.Conv1d(64, 64, 1)
         self.conv_4 = nn.Conv1d(64, 128, 1)
-        self.conv_5 = nn.Conv1d(128, 256, 1)
+        self.conv_5 = nn.Conv1d(128, 128, 1)
 
         self.bn_1 = nn.BatchNorm1d(64)
         self.bn_2 = nn.BatchNorm1d(64)
         self.bn_3 = nn.BatchNorm1d(64)
         self.bn_4 = nn.BatchNorm1d(128)
-        self.bn_5 = nn.BatchNorm1d(256)
+        self.bn_5 = nn.BatchNorm1d(128)
         
 
     def forward(self, x, plot=False):
@@ -105,53 +172,27 @@ class BasePointNet(nn.Module):
         x = F.relu(self.bn_3(self.conv_3(x)))
         x = F.relu(self.bn_4(self.conv_4(x)))
         x = F.relu(self.bn_5(self.conv_5(x)))
+        # x, ix = nn.MaxPool1d(num_points, return_indices=True)(x)  # max-pooling
+        # x = x.view(-1, 256)  # global feature vector 
 
         return x, feature_transform, tnet_out
     
-def img_block_pos_expand(img_block, base_num):
-    dim = img_block.shape
-    values = img_block.view(dim[0], -1, 1)
-    spacial_encoding_mat = torch.from_numpy(get_pos_matrix(values.shape[1], base_num)).T
-    spacial_encoding_mat = spacial_encoding_mat.expand(dim[0], spacial_encoding_mat.shape[0], spacial_encoding_mat.shape[1])
-    pc = torch.cat((spacial_encoding_mat, values), dim=2)
-    return pc
-
-def get_pos_matrix(n, base_num):
-    # get the number of binary digits to represent n
-    dim = int(np.ceil(np.log(n) / np.log(base_num)))
-
-    mat = np.zeros((dim, base_num**dim), dtype=int)
-    # basic pattern
-    base = np.array([range(base_num)])
-
-    for ii in range(dim):
-        # number of same numbers in a row (repeat along row)
-        unit = np.repeat(base, base_num**(ii), axis=1)
-        # number of repeats (repeat along column)
-        full = np.repeat(unit, base_num**(dim-ii-1), axis=0)
-        mat[ii] = full.flatten()
-
-    norm = np.sum(mat, axis=0)
-    norm_mat = mat / base_num  # will give error from 0/0, but not important
-    return norm_mat[:, 1:n+1]
-
-
 class DRNetTest(nn.Module):
     def __init__(self):
         super(DRNetTest, self).__init__()
 
         self.h2h = nn.Sequential(
-            nn.Linear(256, 784),
+            nn.Linear(128, 784),
             nn.BatchNorm1d(784),
             nn.ReLU(),
             nn.Linear(784, 784),
             nn.BatchNorm1d(784),
             nn.ReLU(),
-            nn.Linear(784, 256),
+            nn.Linear(784, 128),
         )
 
-    def forward(self, T, g_pixel_tensor):
-        latent_y_T = torch.zeros(g_pixel_tensor.size(0), 256).to(device)
+    def forward(self, T, g_pixel_tensor, inf_x):
+        latent_y_T = torch.zeros(g_pixel_tensor.size(0), 128).to(device)
 
         # t ~ Uniform ({1, ...T})
         timestep = torch.arange(T, 0, -1)
@@ -168,45 +209,64 @@ class DRNetTest(nn.Module):
             
             # locate the g(x) at current timepoint
             x_point = g_pixel_tensor[:, :, t_prime].view(g_pixel_tensor.size(0), -1)
+            learned_x_point = inf_x[:, :, t_prime].view(g_pixel_tensor.size(0), -1)
             # predict the link to embedding of next timestep
-            input = latent_y_T + x_point
+            input = latent_y_T + learned_x_point
             out = self.h2h(input)
             # calculate the location of embedding of next timestep
             latent_y_T = latent_y_T + x_point + out + sigma_t*epsilon
 
         return latent_y_T
 
-# model
-class ClassificationPointNet(nn.Module):
+# # model
+# class ClassificationPointNet(nn.Module):
 
-    def __init__(self, num_classes, dropout=0.3, point_dimension=3):
-        super(ClassificationPointNet, self).__init__()
+#     def __init__(self, num_classes, dropout=0.3, point_dimension=3):
+#         super(ClassificationPointNet, self).__init__()
 
-        self.fc_1 = nn.Linear(256, 128)
-        self.fc_2 = nn.Linear(128, 64)
-        self.fc_3 = nn.Linear(64, num_classes)
+#         self.fc_1 = nn.Linear(256, 128)
+#         self.fc_2 = nn.Linear(128, 64)
+#         self.fc_3 = nn.Linear(64, num_classes)
 
-        self.bn_1 = nn.BatchNorm1d(128)
-        self.bn_2 = nn.BatchNorm1d(64)
+#         self.bn_1 = nn.BatchNorm1d(128)
+#         self.bn_2 = nn.BatchNorm1d(64)
 
-        self.dropout_1 = nn.Dropout(dropout)
+#         self.dropout_1 = nn.Dropout(dropout)
+
+#     def forward(self, x):
+#         x = x.view(-1, 256)
+
+#         x = F.relu(self.bn_1(self.fc_1(x)))
+#         x = F.relu(self.bn_2(self.fc_2(x)))
+#         x = self.dropout_1(x)
+
+#         return F.log_softmax(self.fc_3(x), dim=1)
+
+class ClassificationNet(nn.Module):
+    def __init__(self):
+        super(ClassificationNet, self).__init__()
+
+        self.fc = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.BatchNorm1d(64), 
+            nn.ReLU(),
+            nn.Linear(64, 10)
+        )
 
     def forward(self, x):
-        x = x.view(-1, 256)
-
-        x = F.relu(self.bn_1(self.fc_1(x)))
-        x = F.relu(self.bn_2(self.fc_2(x)))
-        x = self.dropout_1(x)
-
-        return F.log_softmax(self.fc_3(x), dim=1)
+        x = x.view(x.size(0), -1)
+        # print(x)
+        # print(f"x size: {x.size()}")
+        # x = torch.sum(x, dim=2).view(x.size(0), -1)
+        x = self.fc(x)
+        return F.log_softmax(x, dim=1)
 
 # -----------
 
 # run f net and get the result before training the decoder
-def train_d(trained_f_net, point_net, params):
+def train_d(trained_f_net, trained_g_inf_net, trained_g_net, params):
     encoding = []
     label_list = []
-    feature_transform_list = []
     num_classes = params['num_classes']
     T = params['T']
     lr = params['lr_d']
@@ -216,48 +276,49 @@ def train_d(trained_f_net, point_net, params):
     with torch.no_grad():
         # run f through train dataset
         for i, (images, labels) in enumerate(trainloader):
-            batch_pc = []
-            batch_pc = img_block_pos_expand(images, base_num=params['base_num'])
-            pc = batch_pc.to(torch.float32).to(device)
-            x, feature_transform, tnet_out = point_net(pc)
+            pc = img_block_pos_expand(images, params['base_num'])
+            pc = pc.to(torch.float32).to(device)
+            t_pc = pc.view(pc.size(0), params['point_dimension'], 28, 28)
+            x = trained_g_net(t_pc)
+            inf_x, inf_ft, inf_tnet_out = trained_g_inf_net(pc)
 
-            f_out = trained_f_net(T, x)
+            f_out = trained_f_net(T, x, inf_x)
             
             # record the labels and y_0 predicted
             nlabels = labels.clone().detach()
             label_list.append(nlabels)
             ny_0 = f_out.clone().detach()
             encoding.append(ny_0)
-            ft = feature_transform.clone().detach()
-            feature_transform_list.append(ft)
 
         # run f through test dataset
         for i, (images, labels) in enumerate(testloader):
-            batch_pc = []
-            batch_pc = img_block_pos_expand(images, base_num=params['base_num'])
-            pc = batch_pc.to(torch.float32).to(device)
-            x, feature_transform, tnet_out = point_net(pc)
-            feature_transform_list.append(feature_transform)
+            pc = img_block_pos_expand(images, params['base_num'])
+            pc = pc.to(torch.float32).to(device)
+            t_pc = pc.view(pc.size(0), params['point_dimension'], 28, 28)
+            x = trained_g_net(t_pc)
+            inf_x, inf_ft, inf_tnet_out = trained_g_inf_net(pc)
 
-            f_out = trained_f_net(T, x)
+            f_out = trained_f_net(T, x, inf_x)
             
             # record the labels and y_0 predicted
             nlabels = labels.clone().detach()
             label_list.append(nlabels)
             ny_0 = f_out.clone().detach()
             encoding.append(ny_0)
-            ft = feature_transform.clone().detach()
-            feature_transform_list.append(ft)
+
+    y_0_data_path = "y_0_encoding_hs128.pt"
+    torch.save(encoding, y_0_data_path)
+    label_data_path = "label_list_hs128.pt"
+    torch.save(label_list, label_data_path)
     
-    decoder = train_decoder(encoding, label_list, feature_transform_list, lr, epochs)
+    decoder = train_decoder(encoding, label_list, lr, epochs)
 
     return decoder
 
 # training the decoder with the output from f net
-def train_decoder(y_0_list, label_list, feature_transform_list, lr, epochs):
+def train_decoder(y_0_list, label_list, lr, epochs):
     # Initialize model
-    model = ClassificationPointNet(num_classes=10,
-                                   point_dimension=8)
+    model = ClassificationNet()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
@@ -265,7 +326,7 @@ def train_decoder(y_0_list, label_list, feature_transform_list, lr, epochs):
     for e in range(epochs):
         epoch_train_loss = []
         epoch_train_acc = []
-        for i, (y_0, labels, ft) in enumerate(zip(y_0_list, label_list, feature_transform_list)):
+        for i, (y_0, labels) in enumerate(zip(y_0_list, label_list)):
             optimizer.zero_grad()
             labels = labels.to(device)
             # Train decoder
@@ -273,12 +334,8 @@ def train_decoder(y_0_list, label_list, feature_transform_list, lr, epochs):
             # Make prediction
             preds = model(y_0)
 
-            identity = torch.eye(ft.shape[-1])
-            identity = identity.to(device)
-            regularization_loss = torch.norm(
-                identity - torch.bmm(ft, ft.transpose(2, 1)))
             # Loss
-            loss = F.nll_loss(preds, labels) + 0.001 * regularization_loss
+            loss = F.nll_loss(preds, labels)
             # Back propagations
             epoch_train_loss.append(loss.cpu().item())
             loss.backward()
@@ -314,33 +371,43 @@ if __name__ == "__main__":
         "num_epochs_d": 200, 
         "noise_scale": 1e-3,
         "lr_d": 0.001,
-        "point_dimension": 6,
-        "base_num":4
+        "point_dimension": 11,
+        "base_num": 2
     }
 
-    fn_d = f"Mar26_decoder_spatial_4"
+    fn_d = f"Apr1_decoder_hs128"
     # configurate logging function
     logging.basicConfig(filename = fn_d + ".log",
                         level = logging.DEBUG,
                         format = '%(asctime)s:%(levelname)s:%(name)s:%(message)s')
-    # load the convolution part of pre-trained encoder
-    path_point_net = "Mar18_point_net_v5_spatial_4.pth"
-    g_trained_state_dict = torch.load(path_point_net)
-    state_dict = {k: v for k, v in g_trained_state_dict.items() if 'base_pointnet' in k}  # Filter to get only 'i2h' parameters
-    state_dict = {key.replace('base_pointnet.', ''): value for key, value in state_dict.items()}
-    point_net = BasePointNet(point_dimension=params['point_dimension'])
-    point_net.load_state_dict(state_dict)
-    point_net = point_net.to(device)
-    point_net.eval()
-    PATH_f = f"Mar25_f_rnn_v18_spatial_4.pth"
+    # path to saved models
+    PATH_g = "Mar30_unet_hs128.pth"
+    PATH_f = f"Mar31_f_rnn_v21_hs128.pth"
+    PATH_g_inf = f"Mar31_g_inf_hs128.pth"
     PATH_d = fn_d + ".pth"
 
+    # load g net
+    g_trained_state_dict = torch.load(PATH_g)
+    state_dict = {k: v for k, v in g_trained_state_dict.items() if 'fc' not in k}  # Filter to get only 'i2h' parameters
+    trained_g_net = UNet(n_channels=11, n_classes=10)
+    trained_g_net.load_state_dict(state_dict)
+    trained_g_net = trained_g_net.to(device)
+    trained_g_net.eval()
     # load f net
     trained_f_net = DRNetTest().to(device)
     trained_f_net.load_state_dict(torch.load(PATH_f, map_location=torch.device('cpu')), strict=False)
     trained_f_net.eval()
+    # load g inf net
+    trained_g_inf_net = BasePointNet(point_dimension=params['point_dimension']).to(device)
+    trained_g_inf_net.load_state_dict(torch.load(PATH_g_inf, map_location=torch.device('cpu')), strict=False)
+    trained_g_inf_net.eval()
     # save model
-    decoder = train_d(trained_f_net, point_net, params)
+    decoder = train_d(trained_f_net, trained_g_inf_net, trained_g_net, params)
+    # y_0_data_path = "y_0_encoding.pt"
+    # y_0_list = torch.load(y_0_data_path)
+    # label_data_path = "laebl_list.pt"
+    # label_list = torch.load(label_data_path)
+    # decoder = train_decoder(y_0_list, label_list, params['lr_d'], params['num_epochs_d'])
     torch.save(decoder.state_dict(), PATH_d)
     
     # # test model

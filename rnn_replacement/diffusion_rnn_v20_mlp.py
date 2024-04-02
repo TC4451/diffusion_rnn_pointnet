@@ -127,18 +127,28 @@ class DRNet(nn.Module):
     def __init__(self):
         super(DRNet, self).__init__()
         
-        # hidden layer to previous timestep
-        self.h2h = nn.Sequential(
-            nn.Linear(256, 784),
+        # # hidden layer to previous timestep
+        # self.h2h = nn.Sequential(
+        #     nn.Linear(256, 784),
+        #     nn.BatchNorm1d(784),
+        #     nn.ReLU(),
+        #     nn.Linear(784, 784),
+        #     nn.BatchNorm1d(784),
+        #     nn.ReLU(),
+        #     nn.Linear(784, 256),
+        # )
+
+        self.mlp = nn.Sequential(
+            nn.Linear(257, 784),
             nn.BatchNorm1d(784),
             nn.ReLU(),
             nn.Linear(784, 784),
             nn.BatchNorm1d(784),
             nn.ReLU(),
-            nn.Linear(784, 256),
+            nn.Linear(784, 256), 
         )
 
-    def forward(self, T, g_cumsum, g_pixel_tensor, loss_fn, L):
+    def forward(self, T, g_cumsum, g_pixel_tensor, loss_fn, L, flat_img):
 
         # t ~ Uniform ({1, ...T})
         timestep = torch.arange(1, T+1, 1)
@@ -162,15 +172,23 @@ class DRNet(nn.Module):
             # calculate expected y_t
             expected_y_t_minus = latent_y_0 - a_t_minus/a_T * g_cumsum[:, :, t_prime]
 
-            # locate the g(x) at current timepoint
-            x_point = g_pixel_tensor[:, :, t_prime-1].view(g_pixel_tensor.size(0), -1)
-            # learn link from sample in the current timepoint sphere to the previous point
-            input = y_t + x_point
-            out = self.h2h(input)
+            # # locate the g(x) at current timepoint
+            # x_point = g_pixel_tensor[:, :, t_prime-1].view(g_pixel_tensor.size(0), -1)
+            # # learn link from sample in the current timepoint sphere to the previous point
+            # input = y_t + x_point
+            pixel = flat_img[:, t_prime-1]
+            # print(pixel.size())
+            # print(y_t.size())
+            input = torch.cat((y_t, pixel.unsqueeze(1)), dim=1)
+            # print(f"pixel shape: {pixel.size()}")
+            # print(f"y_t shape: {y_t.size()}")
+            out = self.mlp(input)
+             
+            # out = self.h2h(input)
 
             # training loss
             # lambda*||f, expected_y_(t-1) - (y_t + g(x))||
-            loss = loss_fn(out, expected_y_t_minus - (y_t + x_point))
+            loss = loss_fn(out, expected_y_t_minus - y_t)
             lambda_t = 1/a_t_minus - 1/a_t
             L += lambda_t * loss
         
@@ -207,8 +225,10 @@ def train_f(point_net, params):
             g_pixel_tensor = torch.flip(x, dims=[2])
             g_cumsum = torch.cumsum(g_pixel_tensor, dim=2).to(device)
 
+            flat_img = images.view(images.size(0), -1).to(device)
+            flat_img = torch.flip(flat_img, dims=[1])
             # train f_net
-            f_out, L = f_net(T, g_cumsum, g_pixel_tensor, loss_fn, L)
+            f_out, L = f_net(T, g_cumsum, g_pixel_tensor, loss_fn, L, flat_img)
 
             # back propagation
             optimizer.zero_grad()
@@ -235,7 +255,7 @@ if __name__ == "__main__":
         "point_dimension": 3
     }
 
-    fn_f = f"Mar14_f_rnn_v18_noise_scale_neg1_lr{params['lr_f']}_e{params['num_epochs']}"
+    fn_f = f"Mar26_f_rnn_v20_mlp"
     path_g_net = "Mar7_point_net_v2_Summation.pth"
 
     # configurate logging function

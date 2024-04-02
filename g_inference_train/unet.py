@@ -1,13 +1,13 @@
-# https://datascienceub.medium.com/pointnet-implementation-explained-visually-c7e300139698
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 import torch
 from torchvision import datasets, transforms
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import logging
-import time 
+from torchvision import models
+from torch.nn.functional import relu
 
 # load MNIST dataset, convert to binary pixel values
 mnist_train = datasets.MNIST(root='./data', train=True, download=True,
@@ -22,117 +22,105 @@ mnist_test = datasets.MNIST(root='./data', train=False, download=True,
                                  transforms.Lambda(lambda x: torch.where(x > 0,1,0))
                              ]))
 testloader = torch.utils.data.DataLoader(mnist_test, batch_size=64, shuffle=False)
-  
-class TransformationNet(nn.Module):
 
-    def __init__(self, input_dim, output_dim):
-        super(TransformationNet, self).__init__()
-        self.output_dim = output_dim
 
-        self.conv_1 = nn.Conv1d(input_dim, 64, 1)
-        self.conv_2 = nn.Conv1d(64, 128, 1)
-        self.conv_3 = nn.Conv1d(128, 256, 1)
+class UNet(nn.Module):
+    def __init__(self, n_class):
+        super().__init__()
+        
+        # Encoder
+        self.e11 = nn.Conv2d(11, 64, kernel_size=3, padding=1)
+        self.e12 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
 
-        self.bn_1 = nn.BatchNorm1d(64)
-        self.bn_2 = nn.BatchNorm1d(128)
-        self.bn_3 = nn.BatchNorm1d(256)
-        self.bn_4 = nn.BatchNorm1d(256)
-        self.bn_5 = nn.BatchNorm1d(128)
+        self.e21 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.e22 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
 
-        self.fc_1 = nn.Linear(256, 256)
-        self.fc_2 = nn.Linear(256, 128)
-        self.fc_3 = nn.Linear(128, self.output_dim*self.output_dim)
+        self.e31 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
+        self.e32 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        self.e41 = nn.Conv2d(256, 512, kernel_size=3, padding=1)
+        self.e42 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
+        self.pool4 = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        self.e51 = nn.Conv2d(512, 1024, kernel_size=3, padding=1)
+        self.e52 = nn.Conv2d(1024, 1024, kernel_size=3, padding=1)
+
+        # Decoder
+        self.upconv1 = nn.ConvTranspose2d(1024, 512, kernel_size=2, stride=2)
+        self.d11 = nn.Conv2d(1024, 512, kernel_size=3, padding=1)
+        self.d12 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
+
+        self.upconv2 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
+        self.d21 = nn.Conv2d(512, 256, kernel_size=3, padding=1)
+        self.d22 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+
+        self.upconv3 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
+        self.d31 = nn.Conv2d(256, 128, kernel_size=3, padding=1)
+        self.d32 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+
+        self.upconv4 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.d41 = nn.Conv2d(128, 64, kernel_size=3, padding=1)
+        self.d42 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+
+        # Output layer
+        self.outconv = nn.Conv2d(64, n_class, kernel_size=1)
 
     def forward(self, x):
-        num_points = x.shape[1]
-        x = x.transpose(2, 1)
-        x = F.relu(self.bn_1(self.conv_1(x)))
-        x = F.relu(self.bn_2(self.conv_2(x)))
-        x = F.relu(self.bn_3(self.conv_3(x)))
+        # Encoder
+        xe11 = F.relu(self.e11(x))
+        xe12 = F.relu(self.e12(xe11))
+        xp1 = self.pool1(xe12)
 
-        x = nn.MaxPool1d(num_points)(x)
-        x = x.view(-1, 256)
+        xe21 = F.relu(self.e21(xp1))
+        xe22 = F.relu(self.e22(xe21))
+        xp2 = self.pool2(xe22)
 
-        x = F.relu(self.bn_4(self.fc_1(x)))
-        x = F.relu(self.bn_5(self.fc_2(x)))
-        x = self.fc_3(x)
+        xe31 = F.relu(self.e31(xp2))
+        xe32 = F.relu(self.e32(xe31))
+        xp3 = self.pool3(xe32)
 
-        identity_matrix = torch.eye(self.output_dim)
-        if torch.cuda.is_available():
-            identity_matrix = identity_matrix.cuda()
-        x = x.view(-1, self.output_dim, self.output_dim) + identity_matrix
-        return x
+        xe41 = F.relu(self.e41(xp3))
+        xe42 = F.relu(self.e42(xe41))
+        xp4 = self.pool4(xe42)
 
-
-class BasePointNet(nn.Module):
-
-    def __init__(self, point_dimension):
-        super(BasePointNet, self).__init__()
-        # print(f"____point dim:{point_dimension}")
-        self.input_transform = TransformationNet(input_dim=point_dimension, output_dim=point_dimension)
-        self.feature_transform = TransformationNet(input_dim=64, output_dim=64)
+        xe51 = F.relu(self.e51(xp4))
+        xe52 = F.relu(self.e52(xe51))
         
-        self.conv_1 = nn.Conv1d(point_dimension, 64, 1)
-        self.conv_2 = nn.Conv1d(64, 64, 1)
-        self.conv_3 = nn.Conv1d(64, 64, 1)
-        self.conv_4 = nn.Conv1d(64, 128, 1)
-        self.conv_5 = nn.Conv1d(128, 256, 1)
+        # Decoder
+        xu1 = self.upconv1(xe52)
+        xu1 = F.interpolate(xu1, size=xu1.size()[2:], mode='bilinear', align_corners=True)
+        xu11 = torch.cat([xu1, xe42], dim=1)
+        xd11 = F.relu(self.d11(xu11))
+        xd12 = F.relu(self.d12(xd11))
 
-        self.bn_1 = nn.BatchNorm1d(64)
-        self.bn_2 = nn.BatchNorm1d(64)
-        self.bn_3 = nn.BatchNorm1d(64)
-        self.bn_4 = nn.BatchNorm1d(128)
-        self.bn_5 = nn.BatchNorm1d(256)
-        
+        xu2 = self.upconv2(xd12)
+        xu2 = F.interpolate(xu2, size=xu2.size()[2:], mode='bilinear', align_corners=True)
+        xu22 = torch.cat([xu2, xe32], dim=1)
+        xd21 = F.relu(self.d21(xu22))
+        xd22 = F.relu(self.d22(xd21))
 
-    def forward(self, x, plot=False):
-        num_points = x.shape[1]
-        
-        input_transform = self.input_transform(x) # T-Net tensor [batch, 3, 3]
-        x = torch.bmm(x, input_transform) # Batch matrix-matrix product 
-        x = x.transpose(2, 1) 
-        tnet_out=x.cpu().detach().numpy()
-        
-        x = F.relu(self.bn_1(self.conv_1(x)))
-        x = F.relu(self.bn_2(self.conv_2(x)))
-        x = x.transpose(2, 1)
+        xu3 = self.upconv3(xd22)
+        xu3 = F.interpolate(xu3, size=xu3.size()[2:], mode='bilinear', align_corners=True)
+        xu33 = torch.cat([xu3, xe22], dim=1)
+        xd31 = F.relu(self.d31(xu33))
+        xd32 = F.relu(self.d32(xd31))
 
-        feature_transform = self.feature_transform(x) # T-Net tensor [batch, 64, 64]
-        x = torch.bmm(x, feature_transform)
-        x = x.transpose(2, 1)
-        x = F.relu(self.bn_3(self.conv_3(x)))
-        x = F.relu(self.bn_4(self.conv_4(x)))
-        x = F.relu(self.bn_5(self.conv_5(x))) 
-        x = torch.sum(x, dim=2)  # summation
-        x = x.view(-1, 256)  # global feature vector 
+        xu4 = self.upconv4(xd32)
+        xu4 = F.interpolate(xu4, size=xu4.size()[2:], mode='bilinear', align_corners=True)
+        xu44 = torch.cat([xu4, xe12], dim=1)
+        xd41 = F.relu(self.d41(xu44))
+        xd42 = F.relu(self.d42(xd41))
 
-        return x, feature_transform, tnet_out
+        # Output layer
+        out = self.outconv(xd42)
+
+        return out
 
 
-class ClassificationPointNet(nn.Module):
-
-    def __init__(self, num_classes, dropout=0.3, point_dimension=3):
-        super(ClassificationPointNet, self).__init__()
-        self.base_pointnet = BasePointNet(point_dimension=point_dimension)
-
-        self.fc_1 = nn.Linear(256, 128)
-        self.fc_2 = nn.Linear(128, 64)
-        self.fc_3 = nn.Linear(64, num_classes)
-
-        self.bn_1 = nn.BatchNorm1d(128)
-        self.bn_2 = nn.BatchNorm1d(64)
-
-        self.dropout_1 = nn.Dropout(dropout)
-
-    def forward(self, x):
-        x, feature_transform, tnet_out = self.base_pointnet(x)
-
-        x = F.relu(self.bn_1(self.fc_1(x)))
-        x = F.relu(self.bn_2(self.fc_2(x)))
-        x = self.dropout_1(x)
-
-        return F.log_softmax(self.fc_3(x), dim=1), feature_transform, tnet_out
-
+    
 def img_block_pos_expand(img_block, base):
     dim = img_block.shape
     values = img_block.view(dim[0], -1, 1)
@@ -158,14 +146,12 @@ def get_pos_matrix(n, base_num):
     norm_mat = mat / base_num  # will give error from 0/0, but not important
     return norm_mat[:, 1:n+1]
 
-fn = "Mar18_point_net_v5_spatial_4"
-base_num = 4
-point_dim = 6
+fn = "Mar30_unet"
+base_num = 2
 
 path_point_net = fn + ".pth" 
 # state_dict = torch.load(path_point_net)
-model = ClassificationPointNet(num_classes=10,
-                                   point_dimension=point_dim)
+model = UNet(n_class=10)
 # model.load_state_dict(state_dict)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -186,8 +172,6 @@ best_loss= np.inf
 for epoch in range(epochs):
     epoch_train_loss = []
     epoch_train_acc = []
-    last_epoch_time = time.time()
-    # print("\rTime remaining: %.2f seconds" % last_epoch_time, end="")
 
     # training loop
     for i, (images, labels) in enumerate(trainloader):
@@ -195,17 +179,15 @@ for epoch in range(epochs):
         # print(type(images), images.shape)
         batch_pc = img_block_pos_expand(images, base_num)
         pc = batch_pc.to(torch.float32).to(device)
+        # print(pc.size())
+        pc = pc.view(images.size(0), 11, 28, 28)
         labels = labels.to(device)
         optimizer.zero_grad()
         model = model.train()
-        preds, feature_transform, tnet_out = model(pc)
+        output = model(pc)
 
-        identity = torch.eye(feature_transform.shape[-1])
-        identity = identity.to(device)
-        regularization_loss = torch.norm(
-            identity - torch.bmm(feature_transform, feature_transform.transpose(2, 1)))
         # Loss
-        loss = F.nll_loss(preds, labels) + 0.001 * regularization_loss
+        loss = F.nll_loss(preds, labels)
         epoch_train_loss.append(loss.cpu().item())
         loss.backward()
         optimizer.step()
@@ -223,9 +205,10 @@ for epoch in range(epochs):
         val_pc = []
         val_pc = img_block_pos_expand(val_images, base_num)
         val_pc = val_pc.to(torch.float32).to(device)
+        val_pc = val_pc.view(images.size(0), 11, 28, 28)
         val_labels = val_labels.to(device)
         model = model.eval()
-        val_preds, feature_transform, tnet_out = model(val_pc)
+        output = model(val_pc)
         val_loss = F.nll_loss(val_preds, val_labels)
         epoch_test_loss.append(val_loss.cpu().item())
         val_preds = val_preds.data.max(1)[1]

@@ -16,13 +16,13 @@ mnist_train = datasets.MNIST(root='/mnt/VOL1/fangzhou/local/data/zilin_data/data
                                  transforms.ToTensor(),
                                  transforms.Lambda(lambda x: torch.where(x > 0,1,0))
                              ]))
-trainloader = torch.utils.data.DataLoader(mnist_train, batch_size=32, shuffle=False)
+trainloader = torch.utils.data.DataLoader(mnist_train, batch_size=64, shuffle=False)
 mnist_test = datasets.MNIST(root='/mnt/VOL1/fangzhou/local/data/zilin_data/data', train=False, download=True,
                              transform=transforms.Compose([
                                  transforms.ToTensor(),
                                  transforms.Lambda(lambda x: torch.where(x > 0,1,0))
                              ]))
-testloader = torch.utils.data.DataLoader(mnist_test, batch_size=32, shuffle=False)
+testloader = torch.utils.data.DataLoader(mnist_test, batch_size=64, shuffle=False)
 # set device to run
 torch.cuda.set_device(0)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -158,7 +158,7 @@ def get_pos_matrix(n, base_num):
         mat[ii] = full.flatten()
 
     norm = np.sum(mat, axis=0)
-    norm_mat = mat / norm  # will give error from 0/0, but not important
+    norm_mat = mat / base_num  # will give error from 0/0, but not important
     return norm_mat[:, 1:n+1]
 
 class DRNetTest(nn.Module):
@@ -214,10 +214,7 @@ def test_f(point_net, trained_f_net, trained_decoder, params):
     # Sampling
     with torch.no_grad():
         for i, (images, labels) in enumerate(testloader):
-            batch_pc = []
-            for img in images:
-                batch_pc.append(img_block_pos_expand(img, 3))
-            pc = torch.stack(batch_pc, dim=0)
+            pc = img_block_pos_expand(images, params['base_num'])
             pc = pc.to(torch.float32).to(device)
             x, feature_transform, tnet_out = point_net(pc)
             f_out = trained_f_net(T, x)
@@ -316,7 +313,8 @@ if __name__ == "__main__":
         "lr_f": 0.001,
         "num_epochs": 10, 
         "noise_scale": 1e-3,
-        "point_dimension": 8
+        "point_dimension": 6,
+        "base_num": 5
     }
 
     # # configurate logging function
@@ -324,7 +322,7 @@ if __name__ == "__main__":
     #                     level = logging.DEBUG,
     #                     format = '%(asctime)s:%(levelname)s:%(name)s:%(message)s')
     # load the convolution part of pre-trained encoder
-    path_g_net = "Mar18_point_net_v5_spatial_3.pth"
+    path_g_net = "Mar18_point_net_v5_spatial_5.pth"
     g_trained_state_dict = torch.load(path_g_net)
     state_dict = {k: v for k, v in g_trained_state_dict.items() if 'base_pointnet' in k}  # Filter to get only 'i2h' parameters
     state_dict = {key.replace('base_pointnet.', ''): value for key, value in state_dict.items()}
@@ -332,7 +330,7 @@ if __name__ == "__main__":
     g_net.load_state_dict(state_dict)
     g_net = g_net.to(device)
     g_net.eval()
-    PATH_f = f"Mar25_f_rnn_v18_spatial_3.pth"
+    PATH_f = f"Mar25_f_rnn_v18_spatial_5.pth"
     
     # load model for testing
     trained_f_net = DRNetTest().to(device)
@@ -340,7 +338,7 @@ if __name__ == "__main__":
     trained_f_net.eval()
 
     # load decoder for testing
-    PATH_d = '.pth'
+    PATH_d = 'Mar26_decoder_spatial_5.pth'
     trained_decoder = ClassificationPointNet(num_classes=10, point_dimension=3).to(device)
     trained_decoder.load_state_dict(torch.load(PATH_d, map_location=torch.device('cpu')), strict=False)
     trained_decoder.eval()

@@ -1,6 +1,6 @@
 # https://datascienceub.medium.com/pointnet-implementation-explained-visually-c7e300139698
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 import torch
 from torchvision import datasets, transforms
 import torch.nn as nn
@@ -158,9 +158,9 @@ def get_pos_matrix(n, base_num):
     norm_mat = mat / base_num  # will give error from 0/0, but not important
     return norm_mat[:, 1:n+1]
 
-fn = "Mar18_point_net_v5_spatial_4"
-base_num = 4
-point_dim = 6
+fn = "Mar28_point_net_spatial2"
+base_num = 2
+point_dim = 11
 
 path_point_net = fn + ".pth" 
 # state_dict = torch.load(path_point_net)

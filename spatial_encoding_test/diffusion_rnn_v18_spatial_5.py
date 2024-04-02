@@ -37,7 +37,6 @@ class TransformationNet(nn.Module):
         self.conv_1 = nn.Conv1d(input_dim, 64, 1)
         self.conv_2 = nn.Conv1d(64, 128, 1)
         self.conv_3 = nn.Conv1d(128, 256, 1)
-
         self.bn_1 = nn.BatchNorm1d(64)
         self.bn_2 = nn.BatchNorm1d(128)
         self.bn_3 = nn.BatchNorm1d(256)
@@ -112,15 +111,7 @@ class BasePointNet(nn.Module):
 
         return x, feature_transform, tnet_out
     
-# tranform image to 3D (x, y, binary value)
-def img_to_3d(img):
-    # get coordinates of pixels
-    coords_x, coords_y = torch.meshgrid(torch.arange(0, img.size(1)), torch.arange(0, img.size(2)))
-    coords_x = coords_x.flatten().float().unsqueeze(1)
-    coords_y = coords_y.flatten().float().unsqueeze(1)
-    values = img.view(-1).unsqueeze(1)
-    pc = torch.cat((coords_x, coords_y, values), dim=1)
-    return pc
+
 
 # Diffusion rnn network
 class DRNet(nn.Module):
@@ -175,6 +166,33 @@ class DRNet(nn.Module):
             L += lambda_t * loss
         
         return out, L
+    
+def img_block_pos_expand(img_block, base_num):
+    dim = img_block.shape
+    values = img_block.view(dim[0], -1, 1)
+    spacial_encoding_mat = torch.from_numpy(get_pos_matrix(values.shape[1], base_num)).T
+    spacial_encoding_mat = spacial_encoding_mat.expand(dim[0], spacial_encoding_mat.shape[0], spacial_encoding_mat.shape[1])
+    pc = torch.cat((spacial_encoding_mat, values), dim=2)
+    return pc
+
+def get_pos_matrix(n, base_num):
+    # get the number of binary digits to represent n
+    dim = int(np.ceil(np.log(n) / np.log(base_num)))
+
+    mat = np.zeros((dim, base_num**dim), dtype=int)
+    # basic pattern
+    base = np.array([range(base_num)])
+
+    for ii in range(dim):
+        # number of same numbers in a row (repeat along row)
+        unit = np.repeat(base, base_num**(ii), axis=1)
+        # number of repeats (repeat along column)
+        full = np.repeat(unit, base_num**(dim-ii-1), axis=0)
+        mat[ii] = full.flatten()
+
+    norm = np.sum(mat, axis=0)
+    norm_mat = mat / base_num  # will give error from 0/0, but not important
+    return norm_mat[:, 1:n+1]
 
 # Train function for f
 def train_f(point_net, params):
@@ -197,10 +215,8 @@ def train_f(point_net, params):
             L.zero_()
             
             batch_pc = []
-            for img in images:
-                batch_pc.append(img_to_3d(img))
-            pc = torch.stack(batch_pc, dim=0)
-            pc = pc.to(torch.float32).to(device)
+            batch_pc = img_block_pos_expand(images, base_num=params['base_num'])
+            pc = batch_pc.to(torch.float32).to(device)
             x, feature_transform, tnet_out = point_net(pc)
 
             # take the sum from timestep T to 0, reverse order
@@ -232,11 +248,12 @@ if __name__ == "__main__":
         "lr_f": 0.001,
         "num_epochs": 10, 
         "noise_scale": 1e-3,
-        "point_dimension": 3
+        "point_dimension": 6,
+        "base_num": 5
     }
 
-    fn_f = f"Mar14_f_rnn_v18_noise_scale_neg1_lr{params['lr_f']}_e{params['num_epochs']}"
-    path_g_net = "Mar7_point_net_v2_Summation.pth"
+    fn_f = f"Mar25_f_rnn_v18_spatial_5"
+    path_g_net = "Mar18_point_net_v5_spatial_5.pth"
 
     # configurate logging function
     logging.basicConfig(filename = fn_f + ".log",

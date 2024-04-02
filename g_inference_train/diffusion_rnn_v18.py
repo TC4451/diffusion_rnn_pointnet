@@ -138,7 +138,7 @@ class DRNet(nn.Module):
             nn.Linear(784, 256),
         )
 
-    def forward(self, T, g_cumsum, g_pixel_tensor, loss_fn, L):
+    def forward(self, T, g_cumsum, g_pixel_tensor, loss_fn, L, g_inf_tensor):
 
         # t ~ Uniform ({1, ...T})
         timestep = torch.arange(1, T+1, 1)
@@ -164,8 +164,9 @@ class DRNet(nn.Module):
 
             # locate the g(x) at current timepoint
             x_point = g_pixel_tensor[:, :, t_prime-1].view(g_pixel_tensor.size(0), -1)
+            learned_x_point = g_inf_tensor[:, :, t_prime-1].view(g_inf_tensor.size(0), -1)
             # learn link from sample in the current timepoint sphere to the previous point
-            input = y_t + x_point
+            input = y_t + learned_x_point
             out = self.h2h(input)
 
             # training loss
@@ -184,6 +185,7 @@ def train_f(point_net, params):
     T = params['T']
     # Initialize network
     f_net = DRNet().to(device)
+    g_inf_net = BasePointNet(point_dimension=params['point_dimension']).to(device)
     optimizer = torch.optim.AdamW(f_net.parameters(), lr)
     loss_fn = torch.nn.MSELoss().to(device)
     for e in range(num_epochs):
@@ -202,13 +204,15 @@ def train_f(point_net, params):
             pc = torch.stack(batch_pc, dim=0)
             pc = pc.to(torch.float32).to(device)
             x, feature_transform, tnet_out = point_net(pc)
+            inf_x, inf_ft, inf_tnet_out = g_inf_net(pc)
 
             # take the sum from timestep T to 0, reverse order
             g_pixel_tensor = torch.flip(x, dims=[2])
             g_cumsum = torch.cumsum(g_pixel_tensor, dim=2).to(device)
+            g_inf_tensor = torch.flip(inf_x, dims=[2])
 
             # train f_net
-            f_out, L = f_net(T, g_cumsum, g_pixel_tensor, loss_fn, L)
+            f_out, L = f_net(T, g_cumsum, g_pixel_tensor, loss_fn, L, g_inf_tensor)
 
             # back propagation
             optimizer.zero_grad()
@@ -219,7 +223,7 @@ def train_f(point_net, params):
             logging.info(f"Epoch [{e+1}/{num_epochs}], Loss: {L.item():.6f}")
             torch.cuda.empty_cache()
         torch.cuda.empty_cache()
-    return f_net
+    return f_net, g_inf_net
 
 if __name__ == "__main__":
     params = {
@@ -230,13 +234,14 @@ if __name__ == "__main__":
         "channel_count": 1,
         "T": 28 * 28,
         "lr_f": 0.001,
-        "num_epochs": 10, 
+        "num_epochs": 5, 
         "noise_scale": 1e-3,
         "point_dimension": 3
     }
 
-    fn_f = f"Mar14_f_rnn_v18_noise_scale_neg1_lr{params['lr_f']}_e{params['num_epochs']}"
-    path_g_net = "Mar7_point_net_v2_Summation.pth"
+    fn_f = f"Mar28_f_rnn_v18_ep5"
+    fn_g_inf = f"Mar28_g_inf_ep5"
+    path_g_net = "Mar28_point_net.pth"
 
     # configurate logging function
     logging.basicConfig(filename = fn_f + ".log",
@@ -251,6 +256,8 @@ if __name__ == "__main__":
     g_net = g_net.to(device)
     g_net.eval()
     PATH_f = fn_f + ".pth"
+    PATH_g_inf = fn_g_inf + ".pth"
     # save model
-    f_net = train_f(g_net, params)
+    f_net, g_inf_net = train_f(g_net, params)
     torch.save(f_net.state_dict(), PATH_f)
+    torch.save(g_inf_net.state_dict(), PATH_g_inf)
